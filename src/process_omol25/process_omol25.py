@@ -1,5 +1,7 @@
 import logging
 import sys
+import os
+import signal
 from io import BytesIO, StringIO
 from json import load as json_load, dump as json_dump
 from pathlib import Path
@@ -265,6 +267,18 @@ class S3DataProcessor:
         self.sample_size = args.sample_size
         self.memory_threshold = args.memory_threshold_gb * GiB
         self.chunk_idx = 0
+        self.stop_requested = False
+        self.is_slurm = 'SLURM_JOB_ID' in os.environ
+        
+        def handle_signal(signum, frame):
+            logger.warning(f"Rank {self.rank} received signal {signum}. Will exit gracefully.")
+            self.stop_requested = True
+            
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+        if hasattr(signal, 'SIGUSR1'):
+            signal.signal(signal.SIGUSR1, handle_signal)
+            
         self.s3_endpoint_url = "https://s3.echo.stfc.ac.uk"
         self.files_to_process = Path(args.data_source)
         self.group_name = self.files_to_process.stem.replace("_prefix", "").replace("_restart", "")
@@ -445,6 +459,8 @@ class S3DataProcessor:
         process = psutil.Process()
         
         for idx in batch_indices:
+            if getattr(self, 'stop_requested', False):
+                break
             try:
                 result = self.process_single(idx)
                 if result:

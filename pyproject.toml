@@ -18,7 +18,8 @@ dependencies = [
     "psutil",
     "tqdm",
     "zstandard",
-    "pyarrow"
+    "pyarrow",
+    "fastparquet"
 ]
 
 [project.scripts]
