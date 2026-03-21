@@ -64,7 +64,7 @@ def main():
     with open(args.data_source, "r", encoding="utf-8") as f:
         data = json_load(f)
 
-    if "_restart" in args.data_source.name:
+    if args.data_source.name.endswith("_restart.json"):
         restart_file = args.data_source
     else:
         restart_file = args.data_source.with_name(args.data_source.stem + "_restart.json")

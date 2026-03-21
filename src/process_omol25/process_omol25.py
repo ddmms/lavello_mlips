@@ -287,7 +287,7 @@ class S3DataProcessor:
         self.output_props_rank = self.output_dir / f"props_{self.group_name}_{self.rank}.parquet"
         self.s3 = self.initialize_s3_client(args.login_file)
 
-        if "_restart" in self.files_to_process.name:
+        if self.files_to_process.name.endswith("_restart.json"):
             self.restart_file = self.files_to_process
             self.restart = True
         else:
@@ -540,8 +540,11 @@ class S3DataProcessor:
 
             part_files = sorted(list(self.output_dir.glob(f"props_{self.group_name}_*_part_*.parquet")))
             for rank_part_file in part_files:
-                all_dfs.append(pd.read_parquet(rank_part_file))
-                rank_part_file.unlink() # Clean up
+                try:
+                    all_dfs.append(pd.read_parquet(rank_part_file))
+                    rank_part_file.unlink(missing_ok=True) # Clean up
+                except Exception as e:
+                    logger.warning(f"Failed to process or unlink part file {rank_part_file}: {e}")
 
             end_time = time.time()
             elapsed_time = end_time - start_time

@@ -86,10 +86,9 @@ def test_process_omol25_mpi():
     Path(test_data_source).write_bytes(Path("data/noble_gas_compounds_prefix.json").read_bytes())
     create_mock_data(local_data_dir, test_data_source)
     
-    cli_path = Path(sys.executable).parent / "process_omol25"
     cmd = [
         "mpirun", "--oversubscribe", "-n", "2", 
-        str(cli_path),
+        sys.executable, "-m", "process_omol25.cli",
         "--login-file", "psdi-argonne-omol25-ro.json", # Still needed but dummy
         "--data-source", str(test_data_source),
         "--output-dir", str(out_dir),
@@ -129,9 +128,8 @@ def test_process_omol25_no_mpi():
     Path(test_data_source).write_bytes(Path("data/noble_gas_compounds_prefix.json").read_bytes())
     create_mock_data(local_data_dir, test_data_source)
     
-    cli_path = Path(sys.executable).parent / "process_omol25"
     cmd = [
-        str(cli_path),
+        sys.executable, "-m", "process_omol25.cli",
         "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(test_data_source),
         "--output-dir", str(out_dir),
@@ -168,9 +166,8 @@ def test_download_omol25():
     Path(test_data_source).write_bytes(Path("data/noble_gas_compounds_prefix.json").read_bytes())
     create_mock_data(local_data_dir, test_data_source)
     
-    cli_path = Path(sys.executable).parent / "download_omol25"
     cmd = [
-        str(cli_path),
+        sys.executable, "-m", "process_omol25.download_omol25",
         "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(test_data_source),
         "--local-dir", str(local_data_dir),
@@ -204,3 +201,73 @@ def test_download_omol25():
             
     test_data_source.unlink(missing_ok=True)
     Path("test_download_prefix_restart.json").unlink(missing_ok=True)
+
+
+def test_process_omol25_restart_mpi():
+    out_dir = Path("test_output_restart_mpi")
+    local_data_dir = Path("mock_s3_data_restart")
+    test_data_source = Path("test_restart_prefix.json")
+    restart_file = Path("test_restart_prefix_restart.json")
+    
+    # Cleanup
+    for p in [out_dir, local_data_dir, test_data_source, restart_file]:
+        if p.exists():
+            if p.is_dir():
+                for sub in sorted(p.rglob('*'), reverse=True):
+                    sub.unlink() if sub.is_file() else sub.rmdir()
+                p.rmdir()
+            else:
+                p.unlink()
+    
+    # Setup
+    Path(test_data_source).write_bytes(Path("data/noble_gas_compounds_prefix.json").read_bytes())
+    create_mock_data(local_data_dir, test_data_source)
+    
+    # Run 1: process only 2 samples
+    cmd1 = [
+        "mpirun", "--oversubscribe", "-n", "2",
+        sys.executable, "-m", "process_omol25.cli",
+        "--login-file", "psdi-argonne-omol25-ro.json",
+        "--data-source", str(test_data_source),
+        "--output-dir", str(out_dir),
+        "--local-dir", str(local_data_dir),
+        "--sample-size", "2",
+        "--mpi"
+    ]
+    subprocess.run(cmd1, capture_output=True, text=True)
+    
+    # Check restart file: at least some should be marked processed
+    assert restart_file.exists()
+    with open(restart_file, "r") as f:
+        data = json.load(f)
+    processed_count = sum(1 for v in data.values() if v.get("processed"))
+    assert processed_count == 2
+    
+    # Run 2: resume remaining samples
+    cmd2 = [
+        "mpirun", "--oversubscribe", "-n", "2",
+        sys.executable, "-m", "process_omol25.cli",
+        "--login-file", "psdi-argonne-omol25-ro.json",
+        "--data-source", str(restart_file),
+        "--output-dir", str(out_dir),
+        "--local-dir", str(local_data_dir),
+        "--restart",
+        "--mpi"
+    ]
+    result = subprocess.run(cmd2, capture_output=True, text=True)
+    assert result.returncode == 0
+    
+    # Final check: all should be processed in the restart file
+    with open(restart_file, "r") as f:
+        data = json.load(f)
+    assert all(v.get("processed") for v in data.values())
+    
+    # Cleanup
+    for p in [out_dir, local_data_dir, test_data_source, restart_file]:
+        if p.exists():
+            if p.is_dir():
+                for sub in sorted(p.rglob('*'), reverse=True):
+                    sub.unlink() if sub.is_file() else sub.rmdir()
+                p.rmdir()
+            else:
+                p.unlink()
