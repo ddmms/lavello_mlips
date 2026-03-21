@@ -1,15 +1,13 @@
 import argparse
 import logging
-import asyncio
 from pathlib import Path
 from json import load as json_load, dump as json_dump
 from io import BytesIO
 import tarfile
 from tarfile import open as tar_open
 from zstandard import ZstdDecompressor
+import boto3
 from botocore.config import Config
-from aiobotocore.session import get_session
-from tqdm.asyncio import tqdm as async_tqdm
 from tqdm import tqdm
 import time
 import psutil
@@ -51,38 +49,36 @@ def parse_args():
     return parser.parse_args()
 
 
-async def process_prefix(x, data, args, s3_client, semaphore):
-    """Processes a single prefix asynchronously."""
-    async with semaphore:
-        raw_key = data[x]['key']
-        key_list = [raw_key] if isinstance(raw_key, str) else raw_key
-        
-        success = True
-        for k in key_list:
-            source = x + k
-            try:
-                buffer = BytesIO()
-                if args.local_dir:
-                    local_path = args.local_dir / source
-                    if not local_path.exists():
-                        logger.warning(f"Local file '{local_path}' not found. Skipping.")
-                        success = False
-                        continue
-                    content = await asyncio.to_thread(local_path.read_bytes)
-                    buffer.write(content)
-                else:
-                    response = await s3_client.get_object(Bucket=args.bucket, Key=source)
-                    async with response['Body'] as stream:
-                        buffer.write(await stream.read())
-                
-                buffer.seek(0)
-                await asyncio.to_thread(extract_buffer, buffer, x, k)
+def process_prefix(x, data, args, s3_client):
+    """Processes a single prefix synchronously."""
+    raw_key = data[x]['key']
+    key_list = [raw_key] if isinstance(raw_key, str) else raw_key
+    
+    success = True
+    for k in key_list:
+        source = x + k
+        try:
+            buffer = BytesIO()
+            if args.local_dir:
+                local_path = args.local_dir / source
+                if not local_path.exists():
+                    logger.warning(f"Local file '{local_path}' not found. Skipping.")
+                    success = False
+                    continue
+                content = local_path.read_bytes()
+                buffer.write(content)
+            else:
+                response = s3_client.get_object(Bucket=args.bucket, Key=source)
+                buffer.write(response['Body'].read())
+            
+            buffer.seek(0)
+            extract_buffer(buffer, x, k)
 
-            except Exception as e:
-                logger.error(f"Error processing {source}: {e}")
-                success = False
-        
-        return x if success else None
+        except Exception as e:
+            logger.error(f"Error processing {source}: {e}")
+            success = False
+    
+    return x if success else None
 
 def extract_buffer(buffer: BytesIO, x: str, k: str):
     """Decompresses and extracts the buffer to disk."""
@@ -123,8 +119,8 @@ def extract_buffer(buffer: BytesIO, x: str, k: str):
         logger.error(f"Extraction error for {x}: {e}")
         raise
 
-async def manager_loop(keys, data, restart_file, comm, size):
-    """Rank 0 Dispatcher for downloads."""
+def manager_loop(keys, data, restart_file, comm, size):
+    """Rank 0 Dispatcher for downloads (Synchronous)."""
     from mpi4py import MPI
     start_time = time.time()
     logger.info(f"Download Manager starting with {size - 1} workers.")
@@ -136,7 +132,7 @@ async def manager_loop(keys, data, restart_file, comm, size):
     
     while active_workers > 0:
         status = MPI.Status()
-        msg = await asyncio.to_thread(comm.recv, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+        msg = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
         source = status.Get_source()
 
         if msg == "READY":
@@ -160,66 +156,56 @@ async def manager_loop(keys, data, restart_file, comm, size):
         json_dump(data, f, indent=4)
     logger.info(f"Download complete in {time.time() - start_time:.2f} seconds.")
 
-async def worker_loop(data, args, comm):
-    """Rank > 0 Downloader."""
+def worker_loop(data, args, comm):
+    """Rank > 0 Downloader (Synchronous)."""
     from mpi4py import MPI
     s3_client = None
     if not args.local_dir:
         with open(args.login_file, "r") as f:
             creds = json_load(f)
-        session = get_session()
-        s3_client_cm = session.create_client(
+        s3_client = boto3.client(
             's3', region_name='us-east-1',
             endpoint_url="https://s3.echo.stfc.ac.uk",
             aws_access_key_id=creds["access_key"],
             aws_secret_access_key=creds["secret_key"],
             config=Config(retries={'max_attempts': 5})
         )
-        s3_client = await s3_client_cm.__aenter__()
 
     try:
-        semaphore = asyncio.Semaphore(5)
         while True:
             comm.send("READY", dest=0)
-            key = await asyncio.to_thread(comm.recv, source=0, tag=MPI.ANY_TAG)
+            key = comm.recv(source=0, tag=MPI.ANY_TAG)
             if key is None: break
             
-            res = await process_prefix(key, data, args, s3_client, semaphore)
+            res = process_prefix(key, data, args, s3_client)
             if res:
                 comm.send(res, dest=0)
     finally:
-        if s3_client:
-            await s3_client_cm.__aexit__(None, None, None)
+        pass
 
-async def download_serial(keys, data, args):
-    """Serial download for rank 0 only mode."""
+def download_serial(keys, data, args):
+    """Serial download (Synchronous)."""
     start_time = time.time()
     s3_client = None
     if not args.local_dir:
         with open(args.login_file, "r") as f:
             creds = json_load(f)
-        session = get_session()
-        s3_client_cm = session.create_client(
+        s3_client = boto3.client(
             's3', region_name='us-east-1',
             endpoint_url="https://s3.echo.stfc.ac.uk",
             aws_access_key_id=creds["access_key"],
             aws_secret_access_key=creds["secret_key"]
         )
-        s3_client = await s3_client_cm.__aenter__()
         
     try:
-        semaphore = asyncio.Semaphore(10)
-        tasks = [process_prefix(x, data, args, s3_client, semaphore) for x in keys]
-        
-        for coro in async_tqdm.as_completed(tasks, desc="Serial Download"):
-            res = await coro
+        for x in tqdm(keys, desc="Serial Download"):
+            res = process_prefix(x, data, args, s3_client)
             if res:
                 data[res]['processed'] = True
                 
         logger.info(f"Download complete in {time.time() - start_time:.2f} seconds.")
     finally:
-        if s3_client:
-            await s3_client_cm.__aexit__(None, None, None)
+        pass
 
 def main():
     args = parse_args()
@@ -263,11 +249,11 @@ def main():
 
     if size > 1:
         if rank == 0:
-            asyncio.run(manager_loop(keys, data, restart_file, comm, size))
+            manager_loop(keys, data, restart_file, comm, size)
         else:
-            asyncio.run(worker_loop(data, args, comm))
+            worker_loop(data, args, comm)
     else:
-        asyncio.run(download_serial(keys, data, args))
+        download_serial(keys, data, args)
         with open(restart_file, "w") as f:
             json_dump(data, f, indent=4)
 

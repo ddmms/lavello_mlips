@@ -3,7 +3,6 @@ import sys
 import os
 os.environ['ASE_MPI'] = '0'
 import signal
-import asyncio
 from io import BytesIO, StringIO
 from json import load as json_load, dump as json_dump
 from pathlib import Path
@@ -13,16 +12,16 @@ from ase.io import read, write
 import ase.parallel
 from ase.parallel import DummyMPI
 ase.parallel.world = DummyMPI()
+import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from aiobotocore.session import get_session
 from tarfile import open as tar_open
 from zstandard import ZstdDecompressor
 from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 import psutil
-from tqdm.asyncio import tqdm as async_tqdm
+from tqdm import tqdm
 import time
 
 MiB = 1024 ** 2
@@ -300,8 +299,6 @@ class S3DataProcessor:
         end_idx = min(start_idx + self.sample_size, max_idx)
 
         self.indices_to_process = list(range(start_idx, end_idx))
-        # Semaphore for internal worker concurrency
-        self.semaphore = asyncio.Semaphore(5) 
 
     def flush_recs(self, recs):
         """Flushed current batch of records; usually called by Worker."""
@@ -387,47 +384,43 @@ class S3DataProcessor:
             logger.error(f"Error parsing buffer for {x}: {e}")
             return None
 
-    async def process_single(self, idx: int, s3_client=None) -> Optional[Tuple[Dict[str, Any], str]]:
-        """Processes a single task asynchronously."""
-        async with self.semaphore:
-            print(f"Worker {self.rank}: In process_single for idx {idx}", flush=True)
-            start_time = time.time()
-            x = self.prefixes[idx]
-            source = x + self.data[x]['key']
-            rec: Dict[str, Any] = {}
-            try:
-                rec["argonne_rel"] = x
-                rec["data_id"] = source.split("/")[0]
+    def process_single(self, idx: int, s3_client=None) -> Optional[Tuple[Dict[str, Any], str]]:
+        """Processes a single task synchronously."""
+        start_time = time.time()
+        x = self.prefixes[idx]
+        source = x + self.data[x]['key']
+        rec: Dict[str, Any] = {}
+        try:
+            rec["argonne_rel"] = x
+            rec["data_id"] = source.split("/")[0]
 
-                buffer = BytesIO()
-                if self.local_dir:
-                    local_path = self.local_dir / source
-                    print(f"Worker {self.rank}: Reading local file {local_path}", flush=True)
-                    if not local_path.exists():
-                        logger.warning(f"Local file '{local_path}' not found. Skipping.")
-                        return None
-                    content = await asyncio.to_thread(local_path.read_bytes)
-                    buffer.write(content)
-                else:
-                    response = await s3_client.get_object(Bucket=self.args.bucket, Key=source)
-                    async with response['Body'] as stream:
-                        buffer.write(await stream.read())
-                
-                buffer.seek(0)
-                result = await asyncio.to_thread(self._process_buffer, buffer, x)
-                if result:
-                    rec.update(result)
-                else:
+            buffer = BytesIO()
+            if self.local_dir:
+                local_path = self.local_dir / source
+                if not local_path.exists():
+                    logger.warning(f"Local file '{local_path}' not found. Skipping.")
                     return None
-                
-                rec["process_time_s"] = time.time() - start_time
-                return rec, x
-            except Exception as e:
-                logger.error(f"Error processing {source}: {e}")
+                content = local_path.read_bytes()
+                buffer.write(content)
+            else:
+                response = s3_client.get_object(Bucket=self.args.bucket, Key=source)
+                buffer.write(response['Body'].read())
+            
+            buffer.seek(0)
+            result = self._process_buffer(buffer, x)
+            if result:
+                rec.update(result)
+            else:
                 return None
+            
+            rec["process_time_s"] = time.time() - start_time
+            return rec, x
+        except Exception as e:
+            logger.error(f"Error processing {source}: {e}")
+            return None
 
-    async def _manager_loop(self):
-        """Rank 0 Dispatcher loop."""
+    def _manager_loop(self):
+        """Rank 0 Dispatcher loop (Synchronous)."""
         from mpi4py import MPI
         start_time = time.time()
         logger.info(f"Manager starting with {self.size - 1} workers.")
@@ -436,12 +429,11 @@ class S3DataProcessor:
         active_workers = self.size - 1
         processed_count = 0
         
-        from tqdm import tqdm
         pbar = tqdm(total=len(pending_indices), desc="Total Progress")
         
         while active_workers > 0:
             status = MPI.Status()
-            msg = await asyncio.to_thread(self.comm.recv, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+            msg = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
             source = status.Get_source()
 
             if msg == "READY":
@@ -462,7 +454,7 @@ class S3DataProcessor:
         workers_done = 0
         while workers_done < self.size - 1:
             status = MPI.Status()
-            msg = await asyncio.to_thread(self.comm.recv, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+            msg = self.comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
             if msg == "DONE":
                 workers_done += 1
             elif isinstance(msg, tuple): # Delayed result
@@ -480,20 +472,18 @@ class S3DataProcessor:
         logger.info(f"Manager complete. Merging results...")
         self._final_merge(elapsed)
 
-    async def _worker_loop(self):
-        """Rank > 0 Processing loop."""
+    def _worker_loop(self):
+        """Rank > 0 Processing loop (Synchronous)."""
         from mpi4py import MPI
         s3_client = None
         if not self.local_dir:
-            session = get_session()
-            s3_client_cm = session.create_client(
+            s3_client = boto3.client(
                 's3', region_name='us-east-1',
                 endpoint_url=self.s3_endpoint_url,
                 aws_access_key_id=self.creds["access_key"],
                 aws_secret_access_key=self.creds["secret_key"],
                 config=Config(retries={'max_attempts': 5})
             )
-            s3_client = await s3_client_cm.__aenter__()
 
         recs = []
         try:
@@ -503,18 +493,18 @@ class S3DataProcessor:
                 
                 # Receive task
                 status = MPI.Status()
-                idx = await asyncio.to_thread(self.comm.recv, source=0, tag=MPI.ANY_TAG, status=status)
+                idx = self.comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
                 
                 if idx is None: # STOP signal
                     break
                 
-                result = await self.process_single(idx, s3_client)
+                result = self.process_single(idx, s3_client)
                 if result:
                     recs.append(result[0])
                     # Send result back to manager for restart tracking
                     self.comm.send(result, dest=0)
                     
-                    # Periodic flush to memory management
+                    # Periodic flush
                     if psutil.Process().memory_info().rss > self.memory_threshold:
                         self.flush_recs(recs)
                         recs = []
@@ -522,8 +512,6 @@ class S3DataProcessor:
             if recs: self.flush_recs(recs)
             logger.info(f"Worker {self.rank} sending DONE signal.")
             self.comm.send("DONE", dest=0)
-            if s3_client:
-                await s3_client_cm.__aexit__(None, None, None)
 
     def _final_merge(self, elapsed_time):
         """Merges part files and prints stats."""
@@ -552,35 +540,32 @@ class S3DataProcessor:
             logger.warning("No data processed.")
 
     def run_mpi(self):
-        """Entry point."""
+        """Entry point (Synchronous)."""
         if self.size > 1:
             if self.rank == 0:
-                asyncio.run(self._manager_loop())
+                self._manager_loop()
             else:
-                asyncio.run(self._worker_loop())
+                self._worker_loop()
         else:
-            # Serial fallback
-            asyncio.run(self._serial_run())
+            self._serial_run()
 
-    async def _serial_run(self):
-        """Async serial fallback for local debugging."""
+    def _serial_run(self):
+        """Standard serial fallback (Synchronous)."""
         start_time = time.time()
         s3_client = None
         if not self.local_dir:
-            session = get_session()
-            s3_client_cm = session.create_client(
+            s3_client = boto3.client(
                 's3', region_name='us-east-1',
                 endpoint_url=self.s3_endpoint_url,
                 aws_access_key_id=self.creds["access_key"],
                 aws_secret_access_key=self.creds["secret_key"]
             )
-            s3_client = await s3_client_cm.__aenter__()
         
         try:
             recs = []
-            for idx in async_tqdm(self.indices_to_process, desc="Serial"):
+            for idx in tqdm(self.indices_to_process, desc="Serial"):
                 if self.stop_requested: break
-                res = await self.process_single(idx, s3_client)
+                res = self.process_single(idx, s3_client)
                 if res:
                     recs.append(res[0])
                     self.data[res[1]]['processed'] = True
@@ -590,4 +575,4 @@ class S3DataProcessor:
                 json_dump(self.data, f, indent=4)
             self._final_merge(time.time() - start_time)
         finally:
-            if s3_client: await s3_client_cm.__aexit__(None, None, None)
+            pass
