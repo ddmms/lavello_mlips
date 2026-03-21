@@ -69,6 +69,11 @@ def parse_args():
         default=2.0,
         help="Memory threshold in GB to flush records to disk.")
     parser.add_argument(
+        "--local-dir",
+        type=Path,
+        default=None,
+        help="Optional local directory to read data from instead of S3.")
+    parser.add_argument(
         "--mpi",
         action="store_true",
         help="Run using MPI.")

@@ -263,6 +263,7 @@ class S3DataProcessor:
         self.size = size
         self.comm = comm
         self.output_dir = args.output_dir
+        self.local_dir = args.local_dir
         self.restart = args.restart
         self.sample_size = args.sample_size
         self.memory_threshold = args.memory_threshold_gb * GiB
@@ -362,12 +363,19 @@ class S3DataProcessor:
             rec["data_id"] = source.split("/")[0]
 
             buffer = BytesIO()
-            self.s3.download_fileobj(
-                Bucket=self.args.bucket,
-                Key=source,
-                Fileobj=buffer,
-                Config=s3_transfer_options,
-            )
+            if self.local_dir:
+                local_path = self.local_dir / source
+                if not local_path.exists():
+                    logger.warning(f"Local file '{local_path}' not found. Skipping.")
+                    return None
+                buffer.write(local_path.read_bytes())
+            else:
+                self.s3.download_fileobj(
+                    Bucket=self.args.bucket,
+                    Key=source,
+                    Fileobj=buffer,
+                    Config=s3_transfer_options,
+                )
             buffer.seek(0)
 
             decompressor = ZstdDecompressor()
@@ -537,6 +545,8 @@ class S3DataProcessor:
                 final_df = pd.concat(all_dfs, ignore_index=True)
                 final_df.to_parquet(self.output_props_final, index=False)
                 logger.info(f"Merged {len(all_dfs)} parts into {self.output_props_final.resolve()}")
+            else:
+                raise RuntimeError(f"No data was successfully processed; {self.output_props_final} was not created.")
 
             end_time = time.time()
             elapsed_time = end_time - start_time
