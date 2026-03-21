@@ -10,13 +10,13 @@ def test_process_omol25_mpi():
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
         
-    shutil.copy("../noble_gas_compounds_prefix.json", test_data)
+    shutil.copy("data/noble_gas_compounds_prefix.json", test_data)
     
     cli_path = os.path.join(os.path.dirname(sys.executable), "process_omol25")
     cmd = [
         "mpirun", "-n", "2", 
         cli_path,
-        "--login-file", "../psdi-argonne-omol25-ro.json",
+        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", test_data,
         "--output-dir", out_dir,
         "--mpi"
@@ -44,12 +44,12 @@ def test_process_omol25_no_mpi():
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
         
-    shutil.copy("../noble_gas_compounds_prefix.json", test_data)
+    shutil.copy("data/noble_gas_compounds_prefix.json", test_data)
     
     cli_path = os.path.join(os.path.dirname(sys.executable), "process_omol25")
     cmd = [
         cli_path,
-        "--login-file", "../psdi-argonne-omol25-ro.json",
+        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", test_data,
         "--output-dir", out_dir
     ]
