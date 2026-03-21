@@ -285,7 +285,10 @@ class S3DataProcessor:
         self.group_name = self.files_to_process.stem.replace("_prefix", "").replace("_restart", "")
         self.output_props_final = self.output_dir / f"props_{self.group_name}.parquet"
         self.output_props_rank = self.output_dir / f"props_{self.group_name}_{self.rank}.parquet"
-        self.s3 = self.initialize_s3_client(args.login_file)
+        if args.local_dir:
+            self.s3 = None
+        else:
+            self.s3 = self.initialize_s3_client(args.login_file)
 
         if self.files_to_process.name.endswith("_restart.json"):
             self.restart_file = self.files_to_process

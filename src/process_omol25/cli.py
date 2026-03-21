@@ -13,7 +13,8 @@ def parse_args():
     parser.add_argument(
         "--login-file",
         type=Path,
-        required=True,
+        required=False,
+        default=None,
         help="Path to the JSON file containing S3 access_key and secret_key.",
     )
     parser.add_argument(
@@ -56,7 +57,7 @@ def parse_args():
     parser.add_argument(
         "--log-file",
         type=Path,
-        default="",
+        default=None,
         help="Optional path to a file where logs will also be written.",
     )
     parser.add_argument(
@@ -101,12 +102,16 @@ def main():
         "CRITICAL": logging.CRITICAL,
     }
     if rank == 0 :
+        logfile = args.log_file if args.log_file else Path(args.data_source.stem + ".log")
         setup_logging(
-            log_level_map.get(args.log_level.upper(), logging.INFO),
-            Path(args.data_source.stem+".log") if args.log_file  else args.log_file
+            level=log_level_map.get(args.log_level.upper(), logging.INFO),
+            log_file_path=logfile
         )
 
-    processor = S3DataProcessor(args,rank,size,comm)
+    if not args.local_dir and not args.login_file:
+        raise ValueError("--login-file is required when --local-dir is not specified.")
+
+    processor = S3DataProcessor(args, rank, size, comm)
     processor.run_mpi()
 
 

@@ -89,7 +89,6 @@ def test_process_omol25_mpi():
     cmd = [
         "mpirun", "--oversubscribe", "-n", "2", 
         sys.executable, "-m", "process_omol25.cli",
-        "--login-file", "psdi-argonne-omol25-ro.json", # Still needed but dummy
         "--data-source", str(test_data_source),
         "--output-dir", str(out_dir),
         "--local-dir", str(local_data_dir),
@@ -130,7 +129,6 @@ def test_process_omol25_no_mpi():
     
     cmd = [
         sys.executable, "-m", "process_omol25.cli",
-        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(test_data_source),
         "--output-dir", str(out_dir),
         "--local-dir", str(local_data_dir)
@@ -168,7 +166,6 @@ def test_download_omol25():
     
     cmd = [
         sys.executable, "-m", "process_omol25.download_omol25",
-        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(test_data_source),
         "--local-dir", str(local_data_dir),
         "--sample-size", "1"
@@ -227,7 +224,6 @@ def test_process_omol25_restart_mpi():
     cmd1 = [
         "mpirun", "--oversubscribe", "-n", "2",
         sys.executable, "-m", "process_omol25.cli",
-        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(test_data_source),
         "--output-dir", str(out_dir),
         "--local-dir", str(local_data_dir),
@@ -247,7 +243,6 @@ def test_process_omol25_restart_mpi():
     cmd2 = [
         "mpirun", "--oversubscribe", "-n", "2",
         sys.executable, "-m", "process_omol25.cli",
-        "--login-file", "psdi-argonne-omol25-ro.json",
         "--data-source", str(restart_file),
         "--output-dir", str(out_dir),
         "--local-dir", str(local_data_dir),

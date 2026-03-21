@@ -15,9 +15,16 @@ from .process_omol25 import s3_transfer_options, setup_logging, get_ranges
 
 logger = logging.getLogger(__name__)
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Download and extract molecular data in memory.")
-    parser.add_argument("--login-file", type=Path, required=True, help="Path to credentials JSON.")
+    parser.add_argument(
+        "--login-file",
+        type=Path,
+        required=False,
+        default=None,
+        help="Path to credentials JSON.",
+    )
     parser.add_argument("--bucket", type=str, default="omol-25-small", help="S3 bucket.")
     parser.add_argument("--data-source", type=Path, required=True, help="JSON file with keys.")
     parser.add_argument("--sample-size", type=int, default=-1, help="Number of samples to run.")
@@ -25,7 +32,21 @@ def parse_args():
     parser.add_argument("--restart", action="store_true", help="Skip configurations marked as processed.")
     parser.add_argument("--local-dir", type=Path, default=None, help="Optional local directory to read data from instead of S3.")
     parser.add_argument("--mpi", action="store_true", help="Run with MPI.")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level.",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Optional path to a file where logs will also be written.",
+    )
     return parser.parse_args()
+
 
 def initialize_s3_client(login_file: Path):
     with open(login_file, "r") as f:
@@ -45,6 +66,7 @@ def initialize_s3_client(login_file: Path):
         aws_secret_access_key=credentials["secret_key"],
     )
 
+
 def main():
     args = parse_args()
     
@@ -58,8 +80,23 @@ def main():
         rank = 0
         size = 1
 
+    log_level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+
     if rank == 0:
-        setup_logging(logging.INFO, Path(args.data_source.stem + "_download.log"))
+        logfile = args.log_file if args.log_file else Path(args.data_source.stem + "_download.log")
+        setup_logging(
+            level=log_level_map.get(args.log_level.upper(), logging.INFO),
+            log_file_path=logfile
+        )
+
+    if not args.local_dir and not args.login_file:
+        raise ValueError("--login-file is required when --local-dir is not specified.")
 
     with open(args.data_source, "r", encoding="utf-8") as f:
         data = json_load(f)
@@ -83,7 +120,10 @@ def main():
     batches = get_ranges(keys, size)
     my_batch = batches[rank]
 
-    s3 = initialize_s3_client(args.login_file)
+    s3 = None
+    if not args.local_dir:
+        s3 = initialize_s3_client(args.login_file)
+        
     logger.info(f"Rank {rank} processing {len(my_batch)} files.")
 
     start_time = time.time()
