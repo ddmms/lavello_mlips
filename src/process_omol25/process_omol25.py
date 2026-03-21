@@ -344,11 +344,11 @@ class S3DataProcessor:
         num_tasks = len(self.indices_to_process)
         
         if getattr(self.args, "batch_size", None) is not None:
-            self.batch_size = self.args.batch_size
+            self.batch_size = max(50, self.args.batch_size)
         else:
             active_workers = max(1, self.size - 1) if self.size > 1 else max(1, self.size)
             tasks_per_worker = max(1, num_tasks / active_workers)
-            self.batch_size = max(1, int(tasks_per_worker * 0.01))
+            self.batch_size = max(50, int(tasks_per_worker * 0.01))
             
         if self.rank == 0:
             logger.info(f"Using flush batch size of {self.batch_size}")
