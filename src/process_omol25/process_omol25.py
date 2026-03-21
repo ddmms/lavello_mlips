@@ -2,6 +2,7 @@ import logging
 import sys
 import os
 import signal
+import asyncio
 from io import BytesIO, StringIO
 from json import load as json_load, dump as json_dump
 from pathlib import Path
@@ -9,38 +10,27 @@ import re
 import hashlib
 from ase.io import read, write
 from botocore.config import Config
-from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
-from boto3 import client as s3_client
+from aiobotocore.session import get_session
 from tarfile import open as tar_open
 from zstandard import ZstdDecompressor
 from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 import psutil
-from tqdm import tqdm
+from tqdm.asyncio import tqdm as async_tqdm
 import time
+
 MiB = 1024 ** 2
 GiB = 1024 * MiB
-# ... (rest of constants)
 
-multipart_threshold_bytes = 10 * GiB    # 10GB
-multipart_chunksize_bytes = 500 * MiB # 500MB
-transfer_max_concurrency = 2
-
-
-s3_transfer_options = TransferConfig(
-    multipart_threshold=multipart_threshold_bytes,
-    multipart_chunksize=multipart_chunksize_bytes,
-    max_concurrency=transfer_max_concurrency,
-    num_download_attempts=5,
-)
 # ---------- constants ----------
 AU2D = 2.541746          # a.u. → Debye
 D2EA = 0.20819434        # Debye → e·Å
 AU2B = 1.34503431        # a.u. → Buckingham
 AU2EAA = 0.2800285205359031 # a.u. → e·Å²
 B2EAA = 0.208194333 # Buckingham → e·Å²
+
 # ---------- dipole ----------
 RE_DIP = re.compile(
     r"Total\s+Dipole\s+Moment(?:\s*\((a\.u\.|Debye)\))?\s*:\s*"
@@ -67,7 +57,6 @@ def parse_quadrupole (txt: str):
         q_iso = (xx + yy + zz) / 3.0
         return (xx, yy, zz, xy, xz, yz, q_iso)
     return None
-
 
 
 def parse_dipole(txt: str):
@@ -217,21 +206,15 @@ def setup_logging(level=logging.INFO, log_file_path="sample.log"):
     logger.info(f"Logger initialized at level: {logging.getLevelName(level)} ({status_msg})")
 
 
-
-
-def get_ranges(lst: list, M: int) -> list[tuple[int, int]]:
+def get_ranges(lst: list, M: int) -> list[list]:
     """
-    Splits a list of N elements into M parts and returns the (start_index, end_index)
-    range for each part. The split is as even as possible.
-
-    Args:
-        lst: List
-        M: The number of parts (chunks/processors).
-
-    Returns:
-        A list of tuples [(start, end), ...]. The end index is exclusive.
+    Splits a list of N elements into M parts.
     """
+    if isinstance(lst, range):
+        lst = list(lst)
     N = len(lst)
+    if N == 0:
+        return [[] for _ in range(M)]
     base_count = N // M
     remainder = N % M
 
@@ -245,17 +228,15 @@ def get_ranges(lst: list, M: int) -> list[tuple[int, int]]:
             local_n = base_count
 
         current_end = current_start + local_n
-
         ranges.append(lst[current_start:current_end])
-
         current_start = current_end
 
     return ranges
 
+
 class S3DataProcessor:
     """
-    Manages the connection to S3, loads the AseDBDataset, and processes
-    data entries concurrently using a thread pool.
+    Manages molecular data processing using an asynchronous approach.
     """
     def __init__(self, args, rank, size, comm):
         self.args = args
@@ -285,10 +266,12 @@ class S3DataProcessor:
         self.group_name = self.files_to_process.stem.replace("_prefix", "").replace("_restart", "")
         self.output_props_final = self.output_dir / f"props_{self.group_name}.parquet"
         self.output_props_rank = self.output_dir / f"props_{self.group_name}_{self.rank}.parquet"
-        if args.local_dir:
-            self.s3 = None
-        else:
-            self.s3 = self.initialize_s3_client(args.login_file)
+        
+        # Load credentials if not in local mode
+        self.creds = None
+        if not args.local_dir:
+            with open(args.login_file, "r") as f:
+                self.creds = json_load(f)
 
         if self.files_to_process.name.endswith("_restart.json"):
             self.restart_file = self.files_to_process
@@ -317,7 +300,8 @@ class S3DataProcessor:
         start_idx = self.args.start_index
         end_idx = min(start_idx + self.sample_size, max_idx)
 
-        self.indices_to_process = range(start_idx, end_idx)
+        self.indices_to_process = list(range(start_idx, end_idx))
+        self.semaphore = asyncio.Semaphore(10) # Max 10 concurrent tasks per rank
 
         if self.rank == 0:
             logger.info(f"Processing: {self.sample_size} files")
@@ -335,53 +319,10 @@ class S3DataProcessor:
         logger.info(f"Rank {self.rank} flushed {len(recs)} records to {path.name} (Memory: {psutil.Process().memory_info().rss / GiB:.2f} GB)")
         self.chunk_idx += 1
 
-    def initialize_s3_client(self, login_file: Path):
-        """Loads credentials and initializes the Boto3 S3 client."""
-        with open(login_file, "r") as f:
-            credentials = json_load(f)
-
-        config = Config(
-            s3={"addressing_style": "path"},
-            retries={'max_attempts': 5, 'mode': 'standard'},
-            connect_timeout=5,
-            read_timeout=30,
-            max_pool_connections=20  # Fixed value per rank for internal threading
-        )
-
-        return s3_client(
-            "s3",
-            config=config,
-            endpoint_url=self.s3_endpoint_url,
-            aws_access_key_id=credentials["access_key"],
-            aws_secret_access_key=credentials["secret_key"],
-        )
-
-    def process_single(self, idx: int) -> Optional[Tuple[Dict[str, Any], str]]:
-        """Processes a single file from S3."""
-        x = self.prefixes[idx]
-        source = x + self.data[x]['key']
+    def _process_buffer(self, buffer: BytesIO, x: str) -> Optional[Dict[str, Any]]:
+        """CPU-intensive parsing logic, to be run in a thread."""
         rec: Dict[str, Any] = {}
         try:
-            start_time = time.time()
-            rec["argonne_rel"] = x
-            rec["data_id"] = source.split("/")[0]
-
-            buffer = BytesIO()
-            if self.local_dir:
-                local_path = self.local_dir / source
-                if not local_path.exists():
-                    logger.warning(f"Local file '{local_path}' not found. Skipping.")
-                    return None
-                buffer.write(local_path.read_bytes())
-            else:
-                self.s3.download_fileobj(
-                    Bucket=self.args.bucket,
-                    Key=source,
-                    Fileobj=buffer,
-                    Config=s3_transfer_options,
-                )
-            buffer.seek(0)
-
             decompressor = ZstdDecompressor()
             decompressed_buffer = BytesIO()
             decompressor.copy_stream(buffer, decompressed_buffer)
@@ -449,58 +390,81 @@ class S3DataProcessor:
                     if k in eig: rec[k] = eig[k]
             else:
                 rec["status_eigs"] = "MISSING"
-
-            rec["process_time_s"] = time.time() - start_time
-            return rec, x
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            if error_code in ('404', 'NoSuchKey'):
-                logger.warning(f"S3 Key '{source}' not found (404) for index {idx}. Skipping.")
-            else:
-                logger.error(f"Boto3 error for '{source}' (Index {idx}): {e}")
+            return rec
         except Exception as e:
-            logger.error(f"Unexpected error for '{source}' (Index {idx}): {e}")
-        return None
+            logger.error(f"Error parsing buffer for {x}: {e}")
+            return None
 
-    def process_batch(self, batch_indices: list[int]) -> Tuple[list, list]:
-        """Processes a batch of indices without threads."""
+    async def process_single(self, idx: int, s3_client=None) -> Optional[Tuple[Dict[str, Any], str]]:
+        """Processes a single file asynchronously."""
+        async with self.semaphore:
+            start_time = time.time()
+            x = self.prefixes[idx]
+            source = x + self.data[x]['key']
+            rec: Dict[str, Any] = {}
+            try:
+                rec["argonne_rel"] = x
+                rec["data_id"] = source.split("/")[0]
+
+                buffer = BytesIO()
+                if self.local_dir:
+                    local_path = self.local_dir / source
+                    if not local_path.exists():
+                        logger.warning(f"Local file '{local_path}' not found. Skipping.")
+                        return None
+                    content = await asyncio.to_thread(local_path.read_bytes)
+                    buffer.write(content)
+                else:
+                    response = await s3_client.get_object(Bucket=self.args.bucket, Key=source)
+                    async with response['Body'] as stream:
+                        buffer.write(await stream.read())
+                
+                buffer.seek(0)
+                
+                # Offload CPU intensive work to a thread
+                result = await asyncio.to_thread(self._process_buffer, buffer, x)
+                if result:
+                    rec.update(result)
+                else:
+                    return None
+                
+                rec["process_time_s"] = time.time() - start_time
+                return rec, x
+            except Exception as e:
+                logger.error(f"Error processing {source}: {e}")
+                return None
+
+    async def process_batch(self, batch_indices: list[int], s3_client=None) -> Tuple[list, list]:
+        """Processes a batch of indices asynchronously."""
+        tasks = [self.process_single(idx, s3_client) for idx in batch_indices]
+        
         recs = []
         processed_prefixes = []
         
-        pbar = tqdm(total=len(batch_indices), desc=f"rank {self.rank}",
-                    disable=(self.rank != 0 and len(batch_indices) > 100))
-        process = psutil.Process()
-        
-        for idx in batch_indices:
-            if getattr(self, 'stop_requested', False):
+        # Use simple asyncio.gather or as_completed with progress
+        for coro in async_tqdm.as_completed(tasks, desc=f"rank {self.rank}",
+                                               disable=(self.rank != 0 and len(batch_indices) > 5)):
+            if self.stop_requested:
                 break
-            try:
-                result = self.process_single(idx)
-                if result:
-                    rec, prefix = result
-                    recs.append(rec)
-                    processed_prefixes.append(prefix)
-
-                    # Check memory usage
-                    if process.memory_info().rss > self.memory_threshold:
-                        self.flush_recs(recs)
-                        recs = []
-            except Exception as e:
-                logger.error(f"Error for index {idx}: {e}")
-            pbar.update(1)
-        pbar.close()
-
-        # Final flush if anything left in recs
-        if recs:
-            self.flush_recs(recs)
-            recs = []
-
+            result = await coro
+            if result:
+                rec, prefix = result
+                recs.append(rec)
+                processed_prefixes.append(prefix)
+            
+            # Check memory usage
+            if psutil.Process().memory_info().rss > self.memory_threshold:
+                self.flush_recs(recs)
+                recs = []
+        
+        self.flush_recs(recs)
         return recs, processed_prefixes
 
-    def run_mpi(self):
+    async def _async_run(self):
+        """Internal async run logic."""
         start_time = time.time()
         if self.rank == 0:
-            logger.info(f"Starting execution with {self.size} workers.")
+            logger.info(f"Starting async execution with {self.size} workers.")
 
         batches = get_ranges(self.indices_to_process, self.size)
         my_batch = batches[self.rank]
@@ -508,71 +472,91 @@ class S3DataProcessor:
         
         chunks = get_ranges(my_batch, 10)
         
+        # Wait for all ranks to be ready (Async MPI)
         if self.comm:
-            self.comm.Barrier()
+            await asyncio.to_thread(self.comm.Barrier)
         
-        for step, chunk in enumerate(chunks):
-            recs, processed_this_rank = self.process_batch(chunk)
-            
-            # Gather all processed prefixes to Rank 0
+        s3_client = None
+        if not self.local_dir:
+            session = get_session()
+            s3_client_cm = session.create_client(
+                's3',
+                region_name='us-east-1',
+                endpoint_url=self.s3_endpoint_url,
+                aws_access_key_id=self.creds["access_key"],
+                aws_secret_access_key=self.creds["secret_key"],
+                config=Config(retries={'max_attempts': 5})
+            )
+            s3_client = await s3_client_cm.__aenter__()
+
+        try:
+            for step, chunk in enumerate(chunks):
+                if self.stop_requested:
+                    break
+                    
+                recs, processed_this_rank = await self.process_batch(chunk, s3_client)
+                
+                # Gather all processed prefixes to Rank 0 (Async MPI)
+                if self.comm:
+                    all_processed = await asyncio.to_thread(self.comm.gather, processed_this_rank, 0)
+                else:
+                    all_processed = [processed_this_rank]
+
+                if self.rank == 0:
+                    flat_processed = [p for sublist in all_processed for p in (sublist or [])]
+                    if flat_processed:
+                        for p in flat_processed:
+                            self.data[p]['processed'] = True
+
+                        with open(self.restart_file, "w") as f:
+                            json_dump(self.data, f, indent=4)
+                        logger.info(f"Restart data updated in {self.restart_file.resolve()} (step {step+1}/10)")
+
             if self.comm:
-                all_processed = self.comm.gather(processed_this_rank, root=0)
-            else:
-                all_processed = [processed_this_rank]
+                await asyncio.to_thread(self.comm.Barrier)
 
             if self.rank == 0:
-                # Flatten list of lists
-                flat_processed = [p for sublist in all_processed for p in (sublist or [])]
-                if flat_processed:
-                    for p in flat_processed:
-                        self.data[p]['processed'] = True
+                # Merge Parquet files
+                all_dfs = []
+                if self.restart and self.output_props_final.exists():
+                    all_dfs.append(pd.read_parquet(self.output_props_final))
 
-                    # Save restart JSON
-                    with open(self.restart_file, "w") as f:
-                        json_dump(self.data, f, indent=4)
-                    logger.info(f"Restart data updated in {self.restart_file.resolve()} (step {step+1}/10)")
+                part_files = sorted(list(self.output_dir.glob(f"props_{self.group_name}_*_part_*.parquet")))
+                for rank_part_file in part_files:
+                    try:
+                        all_dfs.append(pd.read_parquet(rank_part_file))
+                        rank_part_file.unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.warning(f"Failed to process or unlink part file {rank_part_file}: {e}")
 
-        if self.comm:
-            self.comm.Barrier()
+                elapsed_time = time.time() - start_time
+                if all_dfs:
+                    final_df = pd.concat(all_dfs, ignore_index=True)
+                    final_df.to_parquet(self.output_props_final, index=False)
+                    logger.info(f"Merged {len(all_dfs)} parts into {self.output_props_final.resolve()}")
+                    
+                    if "process_time_s" in final_df.columns:
+                        times = final_df["process_time_s"]
+                        n = len(final_df)
+                        logger.info("-" * 30)
+                        logger.info("Processing Statistics:")
+                        logger.info(f"  Files processed: {n}")
+                        logger.info(f"  Total time:      {times.sum():.2f} s")
+                        logger.info(f"  Mean time:       {times.mean():.4f} s/file")
+                        logger.info(f"  Throughput:      {n / elapsed_time:.2f} files/s (aggregated)")
+                        logger.info("-" * 30)
+                else:
+                    raise RuntimeError(f"No data was successfully processed; {self.output_props_final} was not created.")
 
-        if self.rank == 0:
-            # Merge Parquet files
-            all_dfs = []
-            if self.restart and self.output_props_final.exists():
-                all_dfs.append(pd.read_parquet(self.output_props_final))
+                logger.info("-" * 50)
+                logger.info("Processing complete.")
+                logger.info(f"Total files attempted: {len(self.indices_to_process)}")
+                logger.info(f"Total execution time: {elapsed_time:.2f} seconds")
 
-            part_files = sorted(list(self.output_dir.glob(f"props_{self.group_name}_*_part_*.parquet")))
-            for rank_part_file in part_files:
-                try:
-                    all_dfs.append(pd.read_parquet(rank_part_file))
-                    rank_part_file.unlink(missing_ok=True) # Clean up
-                except Exception as e:
-                    logger.warning(f"Failed to process or unlink part file {rank_part_file}: {e}")
+        finally:
+            if s3_client:
+                await s3_client_cm.__aexit__(None, None, None)
 
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-
-            if all_dfs:
-                final_df = pd.concat(all_dfs, ignore_index=True)
-                final_df.to_parquet(self.output_props_final, index=False)
-                logger.info(f"Merged {len(all_dfs)} parts into {self.output_props_final.resolve()}")
-                
-                if "process_time_s" in final_df.columns:
-                    times = final_df["process_time_s"]
-                    n = len(final_df)
-                    logger.info("-" * 30)
-                    logger.info("Processing Statistics:")
-                    logger.info(f"  Files processed: {n}")
-                    logger.info(f"  Total time:      {times.sum():.2f} s")
-                    logger.info(f"  Mean time:       {times.mean():.4f} s/file")
-                    logger.info(f"  Min time:        {times.min():.4f} s/file")
-                    logger.info(f"  Max time:        {times.max():.4f} s/file")
-                    logger.info(f"  Throughput:      {n / elapsed_time:.2f} files/s (aggregated)")
-                    logger.info("-" * 30)
-            else:
-                raise RuntimeError(f"No data was successfully processed; {self.output_props_final} was not created.")
-
-            logger.info("-" * 50)
-            logger.info("Processing complete.")
-            logger.info(f"Total files attempted: {len(self.indices_to_process)}")
-            logger.info(f"Total execution time: {elapsed_time:.2f} seconds")
+    def run_mpi(self):
+        """Synchronous entry point that runs the async loop."""
+        asyncio.run(self._async_run())

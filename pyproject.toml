@@ -13,6 +13,8 @@ requires-python = ">=3.10"
 dependencies = [
     "boto3",
     "pandas",
+    "aiobotocore",
+    "aiohttp",
     "ase",
     "mpi4py",
     "psutil",
