@@ -46,10 +46,10 @@
   
   
   
-    <title>API Reference &#8212; process_omol25 0.1.11 documentation</title>
+    <title>API Reference &#8212; process_omol25 0.1.12 documentation</title>
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=75810a84" />
     <link rel="stylesheet" type="text/css" href="_static/material.css?v=79c92029" />
-    <script src="_static/documentation_options.js?v=1e825a29"></script>
+    <script src="_static/documentation_options.js?v=297ad043"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <link rel="index" title="Index" href="genindex.html" />
@@ -78,7 +78,7 @@
   <nav class="md-header-nav md-grid">
     <div class="md-flex navheader">
       <div class="md-flex__cell md-flex__cell--shrink">
-        <a href="index.html" title="process_omol25 0.1.11 documentation"
+        <a href="index.html" title="process_omol25 0.1.12 documentation"
            class="md-header-nav__button md-logo">
           
             &nbsp;
@@ -90,7 +90,7 @@
       </div>
       <div class="md-flex__cell md-flex__cell--stretch">
         <div class="md-flex__ellipsis md-header-nav__title" data-md-component="title">
-          <span class="md-header-nav__topic">process_omol25 0.1.11 documentation</span>
+          <span class="md-header-nav__topic">process_omol25 0.1.12 documentation</span>
           <span class="md-header-nav__topic"> API Reference </span>
         </div>
       </div>
@@ -147,7 +147,7 @@
   <nav class="md-tabs" data-md-component="tabs">
     <div class="md-tabs__inner md-grid">
       <ul class="md-tabs__list">
-          <li class="md-tabs__item"><a href="index.html" class="md-tabs__link">process_omol25 0.1.11 documentation</a></li>
+          <li class="md-tabs__item"><a href="index.html" class="md-tabs__link">process_omol25 0.1.12 documentation</a></li>
       </ul>
     </div>
   </nav>
@@ -159,13 +159,13 @@
               <div class="md-sidebar__inner">
                 <nav class="md-nav md-nav--primary" data-md-level="0">
   <label class="md-nav__title md-nav__title--site" for="__drawer">
-    <a href="index.html" title="process_omol25 0.1.11 documentation" class="md-nav__button md-logo">
+    <a href="index.html" title="process_omol25 0.1.12 documentation" class="md-nav__button md-logo">
       
         <img src="_static/" alt=" logo" width="48" height="48">
       
     </a>
     <a href="index.html"
-       title="process_omol25 0.1.11 documentation">process_omol25 0.1.11 documentation</a>
+       title="process_omol25 0.1.12 documentation">process_omol25 0.1.12 documentation</a>
   </label>
   
 
@@ -248,27 +248,27 @@
 <span id="main-processor-module"></span><h2 id="module-process_omol25.process_omol25">Main Processor module<a class="headerlink" href="#module-process_omol25.process_omol25" title="Link to this heading">¶</a></h2>
 <dl class="py class">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.S3DataProcessor">
-<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">S3DataProcessor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">size</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">comm</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor" title="Link to this definition">¶</a></dt>
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">S3DataProcessor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Namespace</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">size</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">comm</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor" title="Link to this definition">¶</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>Manages molecular data processing using an asynchronous Manager/Worker pattern.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.S3DataProcessor.flush_recs">
-<span class="sig-name descname"><span class="pre">flush_recs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">recs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">all_atoms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.flush_recs" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">flush_recs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">recs</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">all_atoms</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.flush_recs" title="Link to this definition">¶</a></dt>
 <dd><p>Flush a batch of records to Parquet, and optionally atoms to ExtXYZ.</p>
 </dd></dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.S3DataProcessor.process_single">
-<span class="sig-name descname"><span class="pre">process_single</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">idx</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s3_client</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.process_single" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">process_single</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">idx</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">s3_client</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">str</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.process_single" title="Link to this definition">¶</a></dt>
 <dd><p>Processes a single task synchronously. Returns (rec, atoms, x) or None.</p>
 </dd></dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.S3DataProcessor.run_mpi">
-<span class="sig-name descname"><span class="pre">run_mpi</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.run_mpi" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">run_mpi</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.run_mpi" title="Link to this definition">¶</a></dt>
 <dd><p>Main entry point for MPI runs (Hybrid RMA).</p>
 </dd></dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.S3DataProcessor.run_serial">
-<span class="sig-name descname"><span class="pre">run_serial</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.run_serial" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">run_serial</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.S3DataProcessor.run_serial" title="Link to this definition">¶</a></dt>
 <dd><p>Standard serial fallback (Synchronous).</p>
 </dd></dl>
 </dd></dl>
@@ -286,7 +286,7 @@
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.get_ranges">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">get_ranges</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">size</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.get_ranges" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">get_ranges</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">size</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">int</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">int</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#process_omol25.process_omol25.get_ranges" title="Link to this definition">¶</a></dt>
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.homo_lumo">
@@ -298,7 +298,7 @@
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.parse_dipole">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">parse_dipole</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">txt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.parse_dipole" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">parse_dipole</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">txt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.parse_dipole" title="Link to this definition">¶</a></dt>
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.parse_eigens">
@@ -306,11 +306,11 @@
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.parse_quadrupole">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">parse_quadrupole</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">txt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.parse_quadrupole" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">parse_quadrupole</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">txt</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.parse_quadrupole" title="Link to this definition">¶</a></dt>
 <dd></dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.process_omol25.setup_logging">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">setup_logging</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_file_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sample.log'</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.process_omol25.setup_logging" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.process_omol25.</span></span><span class="sig-name descname"><span class="pre">setup_logging</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">level</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_file_path</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">Path</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.process_omol25.setup_logging" title="Link to this definition">¶</a></dt>
 <dd><p>Configures the root logger with a console handler and an optional file handler.</p>
 </dd></dl>
 </section>
@@ -318,14 +318,14 @@
 <span id="cli-module"></span><h2 id="module-process_omol25.cli">CLI Module<a class="headerlink" href="#module-process_omol25.cli" title="Link to this heading">¶</a></h2>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.cli.main">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.cli.</span></span><span class="sig-name descname"><span class="pre">main</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.cli.main" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.cli.</span></span><span class="sig-name descname"><span class="pre">main</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#process_omol25.cli.main" title="Link to this definition">¶</a></dt>
 <dd><p>Main entry point for molecular data processing.</p>
 <p>This function coordinates MPI initialization, logging setup, and
 data processing across available workers.</p>
 </dd></dl>
 <dl class="py function">
 <dt class="sig sig-object py" id="process_omol25.cli.parse_args">
-<span class="sig-prename descclassname"><span class="pre">process_omol25.cli.</span></span><span class="sig-name descname"><span class="pre">parse_args</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#process_omol25.cli.parse_args" title="Link to this definition">¶</a></dt>
+<span class="sig-prename descclassname"><span class="pre">process_omol25.cli.</span></span><span class="sig-name descname"><span class="pre">parse_args</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">→</span> <span class="sig-return-typehint"><span class="pre">Namespace</span></span></span><a class="headerlink" href="#process_omol25.cli.parse_args" title="Link to this definition">¶</a></dt>
 <dd><p>Parse command-line arguments for the main processing script.</p>
 <section id="returns">
 <h3 id="returns">Returns<a class="headerlink" href="#returns" title="Link to this heading">¶</a></h3>
