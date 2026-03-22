@@ -195,9 +195,15 @@ def decode_bytestream(bytestream: bytes, decompress=True, json_decode=True) -> A
 
 def cv_xyz_to_lmdb(input_files: List[str], output_file: str):
     """Convert multiple XYZ files to one LMDB database."""
-    # Ensure output has .aselmdb extension for fairchem compatibility if not specified
-    if not output_file.endswith(".aselmdb") and not output_file.endswith(".lmdb"):
-        output_file += ".aselmdb"
+    # Ensure output has .aselmdb extension for fairchem compatibility.
+    # .lmdb is not recognized by ase.db.connect, so we force .aselmdb.
+    path = Path(output_file)
+    if path.suffix != ".aselmdb":
+        if path.suffix == ".lmdb":
+            output_file = str(path.with_suffix(".aselmdb"))
+        else:
+            output_file = str(path.parent / (path.name + ".aselmdb"))
+        print(f"Warning: Changing output extension to .aselmdb for Fairchem compatibility: {output_file}")
         
     # Remove existing file to start fresh
     Path(output_file).unlink(missing_ok=True)
