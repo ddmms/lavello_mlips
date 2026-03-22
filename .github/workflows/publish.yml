@@ -8,7 +8,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    
+
     # Required for GitHub Releases and PyPI Trusted Publishing OIDC handshakes
     permissions:
       id-token: write
@@ -26,7 +26,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv
+          uv --clear venv
           uv pip install -e .
 
       - name: Build
