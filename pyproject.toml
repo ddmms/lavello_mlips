@@ -19,7 +19,9 @@ dependencies = [
     "tqdm",
     "zstandard",
     "pyarrow",
-    "fastparquet"
+    "fastparquet",
+    "lmdb",
+    "orjson"
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,8 @@ dev = [
 process_omol25 = "process_omol25.cli:main"
 download_omol25 = "process_omol25.download_omol25:main"
 verify_processed_omol25 = "process_omol25.verify_processed_omol25:main"
+convert_to_lmdb = "process_omol25.convert_to_lmdb:main"
+
 
 
 
