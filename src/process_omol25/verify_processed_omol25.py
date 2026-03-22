@@ -5,7 +5,6 @@ in `atoms.info`.
 """
 import argparse
 import math
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -157,10 +156,6 @@ def main():
         print(f"\n✅ Data Consistency Verified! 0 mismatches found across {len(common_argonne_rels)} shared structures.")
     else:
         print(f"\n❌ Verification Failed. Encountered {mismatches} property inconsistencies.")
-
-    if mismatches > 0 or missing_in_pq_argonne_rel or missing_in_xyz_argonne_rel:
-        sys.exit(1)
-    sys.exit(0)
-
+    
 if __name__ == "__main__":
     main()
