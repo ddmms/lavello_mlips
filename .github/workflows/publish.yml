@@ -1,4 +1,4 @@
-name: Publish to Zenodo
+name: Publish Release
 
 on:
   push:
@@ -6,10 +6,12 @@ on:
       - 'v*'
 
 jobs:
-  publish-zenodo:
-    name: Create GitHub Release for Zenodo Webhook
+  publish:
     runs-on: ubuntu-latest
+    
+    # Required for GitHub Releases and PyPI Trusted Publishing OIDC handshakes
     permissions:
+      id-token: write
       contents: write
 
     steps:
@@ -20,6 +22,15 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Build
+        run: uv build
 
       - name: Get version from pyproject.toml
         run: echo "VERSION=$(uvx --from=toml-cli toml get --toml-path=pyproject.toml project.version)" >> $GITHUB_ENV
@@ -27,14 +38,18 @@ jobs:
       - name: Check version matches tag
         if: ${{ ! contains(github.ref, env.VERSION) }}
         run: |
-          echo "Git tag does not match version in pyproject.toml. Expected v${{ env.VERSION }}."
+          echo "Git tag does not match version in pyproject.toml. Expected v${{ env.VERSION }}"
           exit 1
 
       - name: Create GitHub Release (Triggers Zenodo Archival)
         uses: ncipollo/release-action@v1
         with:
+          artifacts: "dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
           skipIfReleaseExists: true
           generateReleaseNotes: true
+
+      - name: Publish to PyPI
+        run: uv publish

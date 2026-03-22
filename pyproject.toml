@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "process_omol25"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Python package for processing omol-25 data using MPI."
 authors = [
     { name = "Alin M Elena" }
