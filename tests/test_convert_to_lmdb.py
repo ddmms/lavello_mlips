@@ -21,12 +21,12 @@ def test_convert_to_lmdb_aselmdb_format():
     atoms1.info['string_val'] = "hello"
     atoms1.info['list_val'] = [1.0, 2.0, 3.0]
     atoms1.info['dict_val'] = {"a": 1, "b": {"c": 2}}
-    write(input_xyz1, atoms1)
+    write(input_xyz1, atoms1,format="extxyz")
     
     # Create sample 2
     atoms2 = Atoms('O2', positions=[[0, 0, 0], [0, 0, 1.2]])
     atoms2.info['energy'] = -2.0
-    write(input_xyz2, atoms2)
+    write(input_xyz2, atoms2,format="extxyz")
     
     # Convert
     cv_xyz_to_lmdb([input_xyz1, input_xyz2], output_lmdb)
