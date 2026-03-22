@@ -371,8 +371,6 @@ class S3DataProcessor:
                     self.output_dir.glob(f"props_{self.group_name}*.parquet")
                 )
 
-                from ase.io import read as ase_read
-
                 for pf in parquet_files:
                     xyz_file = pf.parent / pf.name.replace(
                         "props_", "structs_"
@@ -386,7 +384,7 @@ class S3DataProcessor:
 
                         df = pd.read_parquet(pf, columns=["argonne_rel"])
 
-                        atoms_list = ase_read(str(xyz_file), index=":")
+                        atoms_list = read(str(xyz_file), index=":")
                         if not isinstance(atoms_list, list):
                             atoms_list = [atoms_list] if atoms_list else []
 

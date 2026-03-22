@@ -6,6 +6,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/process_omol25.svg)](https://pypi.org/project/process_omol25/)
 [![Python versions](https://img.shields.io/pypi/pyversions/process_omol25.svg)](https://pypi.org/project/process_omol25/)
 [![License](https://img.shields.io/github/license/ddmms/process_omol25.svg)](LICENSE)
+[![Zenodo](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)
 

@@ -14,6 +14,9 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14-dev"]
 
+    permissions:
+      contents: write
+
     steps:
     - uses: actions/checkout@v4
 
@@ -42,4 +45,16 @@ jobs:
         OMPI_MCA_rmaps_base_oversubscribe: 1
         PRTE_MCA_rmaps_base_oversubscribe: 1
       run: |
-        pytest tests/
+        pytest tests/ | tee pytest-coverage.txt
+
+    - name: Update Coverage Badge in README
+      if: matrix.python-version == '3.12' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        COVERAGE=$(grep "TOTAL" pytest-coverage.txt | awk '{print $NF}' | sed 's/%//')
+        echo "Detected coverage: ${COVERAGE}%"
+        sed -i "s|coverage-[0-9]\+%|coverage-${COVERAGE}%|g" README.md
+        
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add README.md
+        git diff --staged --quiet || (git commit -m "docs: update coverage badge to ${COVERAGE}% [skip ci]" && git push)
