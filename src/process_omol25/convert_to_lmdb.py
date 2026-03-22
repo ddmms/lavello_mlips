@@ -91,23 +91,65 @@ class LMDBDatabase(ase.db.core.Database):
     def _write(self, atoms: Union[Atoms, ase.db.row.AtomsRow], key_value_pairs=None, data=None, idx=None):
         if isinstance(atoms, ase.db.row.AtomsRow):
             row = atoms
+            atoms_obj = row.toatoms()
         else:
-            row = ase.db.row.AtomsRow(atoms)
+            atoms_obj = atoms
+            row = ase.db.row.AtomsRow(atoms_obj)
             row.ctime = ase.db.core.now()
             row.user = os.getenv("USER")
 
-        dct = {}
-        for key in row.__dict__:
-            if key[0] == "_" or key in row._keys or key == "id":
-                continue
-            dct[key] = row[key]
-        
-        if key_value_pairs:
-            dct["key_value_pairs"] = key_value_pairs
-        if data:
-            dct["data"] = data
-        else:
-            dct["data"] = {}
+        if key_value_pairs is None:
+            key_value_pairs = {}
+        if data is None:
+            data = {}
+
+        # Capture atoms.info into key_value_pairs (scalars) and data (non-scalars)
+        import numbers
+        scalar_types = (numbers.Real, str, bool, np.bool_)
+        for k, v in atoms_obj.info.items():
+            if isinstance(v, scalar_types):
+                key_value_pairs[k] = v
+            else:
+                data.setdefault("__info__", {})[k] = v
+
+        # Capture custom arrays into data
+        standard_arrays = {
+            "numbers", "positions", "tags", "momenta", "masses",
+            "charges", "magmoms", "velocities"
+        }
+        arrays_to_dump = {
+            k: v for k, v in atoms_obj.arrays.items() if k not in standard_arrays
+        }
+        if arrays_to_dump:
+            data.setdefault("__arrays__", {}).update(arrays_to_dump)
+
+        # Standard ASE db fields
+        dct = {
+            "numbers": atoms_obj.get_atomic_numbers(),
+            "positions": atoms_obj.get_positions(),
+            "cell": np.asarray(atoms_obj.get_cell()),
+            "pbc": atoms_obj.get_pbc(),
+            "mtime": ase.db.core.now(),
+            "ctime": getattr(row, 'ctime', ase.db.core.now()),
+            "user": getattr(row, 'user', os.getenv("USER")),
+            "key_value_pairs": key_value_pairs,
+            "data": data,
+        }
+
+        # Capture calculator properties
+        for prop in ['energy', 'forces', 'stress']:
+            try:
+                if prop == 'energy':
+                    dct[prop] = atoms_obj.get_potential_energy()
+                elif prop == 'forces':
+                    dct[prop] = atoms_obj.get_forces()
+                elif prop == 'stress':
+                    dct[prop] = atoms_obj.get_stress()
+            except (RuntimeError, AttributeError):
+                pass
+
+        if atoms_obj.get_tags().any():
+            dct["tags"] = atoms_obj.get_tags()
             
         # Cell conversion for JSON
         dct["cell"] = np.asarray(dct["cell"])
