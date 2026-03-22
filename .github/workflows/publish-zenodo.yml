@@ -3,24 +3,38 @@ name: Publish to Zenodo
 on:
   push:
     tags:
-      - 'v*'  # Triggers when a new version tag (e.g., v1.0.0) is pushed
+      - 'v*'
 
 jobs:
   publish-zenodo:
-    name: Archive codebase to Zenodo for DOI Generation
+    name: Create GitHub Release for Zenodo Webhook
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Draft and Publish to Zenodo
-        uses: zenodraft/action@0.12.0
-        env:
-          # You must configure this token in your GitHub Repository Secrets
-          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          # If you want to test without minting a real DOI, set this to true (requires sandbox token)
-          sandbox: false
-          # It automatically zips the repository. You can optionally place a `.zenodo.json` file 
-          # in the root of the repo to override the inferred metadata.
+          version: "latest"
+
+      - name: Get version from pyproject.toml
+        run: echo "VERSION=$(uvx --from=toml-cli toml get --toml-path=pyproject.toml project.version)" >> $GITHUB_ENV
+
+      - name: Check version matches tag
+        if: ${{ ! contains(github.ref, env.VERSION) }}
+        run: |
+          echo "Git tag does not match version in pyproject.toml. Expected v${{ env.VERSION }}."
+          exit 1
+
+      - name: Create GitHub Release (Triggers Zenodo Archival)
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          skipIfReleaseExists: true
+          generateReleaseNotes: true
