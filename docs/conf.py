@@ -22,6 +22,7 @@ release = '0.1.0'
 
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx_material',
 ]
 
 autodoc_mock_imports = [
@@ -37,5 +38,5 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'alabaster'
+html_theme = 'sphinx_material'
 html_static_path = ['_static']
