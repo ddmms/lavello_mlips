@@ -1,0 +1,26 @@
+name: Publish to Zenodo
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers when a new version tag (e.g., v1.0.0) is pushed
+
+jobs:
+  publish-zenodo:
+    name: Archive codebase to Zenodo for DOI Generation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Draft and Publish to Zenodo
+        uses: zenodraft/action@0.12.0
+        env:
+          # You must configure this token in your GitHub Repository Secrets
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        with:
+          # If you want to test without minting a real DOI, set this to true (requires sandbox token)
+          sandbox: false
+          # It automatically zips the repository. You can optionally place a `.zenodo.json` file 
+          # in the root of the repo to override the inferred metadata.

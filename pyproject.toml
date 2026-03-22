@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "process_omol25"
@@ -27,8 +27,7 @@ process_omol25 = "process_omol25.cli:main"
 download_omol25 = "process_omol25.download_omol25:main"
 verify_processed_omol25 = "process_omol25.verify_processed_omol25:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
