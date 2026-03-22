@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/ddmms/process_omol25.svg)](LICENSE)
 [![Zenodo](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-![Coverage](https://img.shields.io/badge/coverage-19%25-brightgreen.svg)
+![Coverage](https://img.shields.io/badge/coverage-20%25-brightgreen.svg)
 
 A Python package for processing omol-25 data using MPI.
 
