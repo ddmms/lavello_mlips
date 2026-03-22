@@ -12,7 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args():
-    """Parses command-line arguments for the script."""
+    """
+    Parse command-line arguments for the main processing script.
+
+    Returns
+    -------
+    argparse.Namespace
+        The parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Download, process, and combine molecular data from an S3 bucket."
     )
@@ -94,6 +101,12 @@ def parse_args():
 
 
 def main():
+    """
+    Main entry point for molecular data processing.
+
+    This function coordinates MPI initialization, logging setup, and
+    data processing across available workers.
+    """
     args = parse_args()
 
     # Determine rank early for logging setup

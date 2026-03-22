@@ -20,6 +20,16 @@ try:
 except ImportError:
     # Fallback for if it's run as a standalone script outside the package
     def setup_logging(level=logging.INFO, **kwargs):
+        """
+        Setup basic logging configuration for standalone execution.
+
+        Parameters
+        ----------
+        level : int, optional
+            The logging level to use, by default logging.INFO.
+        **kwargs : dict
+            Additional keyword arguments for basicConfig.
+        """
         logging.basicConfig(
             level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
@@ -29,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args():
+    """
+    Parse command-line arguments for the verification script.
+
+    Returns
+    -------
+    argparse.Namespace
+        The parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Verify consistency between a Parquet dataset and its corresponding ExtXYZ file."
     )
@@ -54,6 +72,12 @@ def parse_args():
 
 
 def main():
+    """
+    Main entry point for verifying Parquet and ExtXYZ consistency.
+
+    This function coordinates the loading of both files, structural alignment,
+    and property validation.
+    """
     args = parse_args()
     setup_logging()
 
