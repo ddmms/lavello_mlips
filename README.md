@@ -16,7 +16,7 @@ A Python package for processing omol-25 data using MPI.
 You can install this package locally:
 
 ```bash
-pip install -e .
+uv pip install -e .
 ```
 
 ## Usage
