@@ -30,6 +30,10 @@ dev = [
     "pre-commit",
     "pytest-cov"
 ]
+docs = [
+    "sphinx",
+    "sphinx-material"
+]
 
 [project.scripts]
 process_omol25 = "process_omol25.cli:main"
