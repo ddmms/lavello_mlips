@@ -43,15 +43,5 @@ jobs:
           echo "Git tag does not match version in pyproject.toml. Expected v${{ env.VERSION }}"
           exit 1
 
-      - name: Create GitHub Release (Triggers Zenodo Archival)
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: "dist/*"
-          token: ${{ secrets.GITHUB_TOKEN }}
-          draft: false
-          prerelease: false
-          skipIfReleaseExists: true
-          generateReleaseNotes: true
-
       - name: Publish to PyPI
         run: uv publish
