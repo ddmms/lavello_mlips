@@ -1,16 +1,16 @@
 import os
 from pathlib import Path
 import numpy as np
-import ase.io
 from process_omol25.convert_to_lmdb import LMDBDatabase, cv_xyz_to_lmdb
+from ase import Atoms
+from ase.io import write
 
 def test_xyz2lmdb_conversion():
     input_xyz1 = "tests/sample1.xyz"
     input_xyz2 = "tests/sample2.xyz"
     output_lmdb = "tests/sample.lmdb"
     
-    from ase import Atoms
-    from ase.io import write
+
     
     # Create sample 1
     atoms1 = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
