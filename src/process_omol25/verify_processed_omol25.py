@@ -70,7 +70,6 @@ def main():
         xyz_by_sha[sha] = at
         xyz_by_argone_rel[at.info.get("argonne_rel")] = at
 
-    print("\n--- Structural Alignment by sha---")
     pq_keys = set(parquet_by_sha.keys())
     xyz_keys = set(xyz_by_sha.keys())
     pq_argonne_rels = set(parquet_by_argone_rel.keys())
@@ -81,11 +80,12 @@ def main():
     missing_in_xyz_argonne_rel = pq_argonne_rels - xyz_argonne_rels
     missing_in_pq_argonne_rel = xyz_argonne_rels - pq_argonne_rels
 
+    print("\n--- Structural Alignment by sha---")
     if missing_in_xyz:
         print(f"❌ {len(missing_in_xyz)} structures found in Parquet but missing from ExtXYZ.")
     if missing_in_pq:
         print(f"❌ {len(missing_in_pq)} structures found in ExtXYZ but missing from Parquet.")
-    
+
     if not missing_in_xyz and not missing_in_pq:
         print(f"✅ Structural alignment perfect: both files contain exactly {len(pq_keys)} uniquely matched molecules.")
 
@@ -94,10 +94,10 @@ def main():
         print(f"❌ {len(missing_in_xyz_argonne_rel)} structures found in Parquet but missing from ExtXYZ.")
     if missing_in_pq_argonne_rel:
         print(f"❌ {len(missing_in_pq_argonne_rel)} structures found in ExtXYZ but missing from Parquet.")
-    
+
     if not missing_in_xyz_argonne_rel and not missing_in_pq_argonne_rel:
         print(f"✅ Structural alignment perfect: both files contain exactly {len(pq_argonne_rels)} uniquely matched molecules.")
-    
+
     print("\n--- Property Validation by argonne_rel ---")
     common_argonne_rels = pq_argonne_rels.intersection(xyz_argonne_rels)
     skip_keys = set(args.skip_keys)
@@ -107,21 +107,21 @@ def main():
     for argonne_rel in common_argonne_rels:
         row = parquet_by_argone_rel[argonne_rel]
         info = xyz_by_argone_rel[argonne_rel].info
-        
+
         for key, pq_val in row.items():
             if key in skip_keys or key in ("argonne_rel", "process_time_s") or "time" in key.lower():
                 continue
-            
+
             if key not in info:
                 print(f"  [Mismatch] argonne_rel={argonne_rel}: Key '{key}' missing from XYZ `atoms.info`.")
                 mismatches += 1
                 continue
-            
+
             xyz_val = info[key]
-            
+
             pq_is_nan = pq_val is None or (isinstance(pq_val, float) and math.isnan(pq_val))
             xyz_is_nan = xyz_val is None or (isinstance(xyz_val, float) and math.isnan(xyz_val))
-            
+
             if pq_is_nan:
                 if not xyz_is_nan:
                     print(f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet is NaN/None but XYZ has {xyz_val!r}")
@@ -156,6 +156,6 @@ def main():
         print(f"\n✅ Data Consistency Verified! 0 mismatches found across {len(common_argonne_rels)} shared structures.")
     else:
         print(f"\n❌ Verification Failed. Encountered {mismatches} property inconsistencies.")
-    
+
 if __name__ == "__main__":
     main()
