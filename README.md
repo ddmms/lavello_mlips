@@ -1,12 +1,12 @@
-# process_omol25
+# lavello_mlips
 
-[![Tests](https://github.com/ddmms/process_omol25/actions/workflows/test.yml/badge.svg)](https://github.com/ddmms/process_omol25/actions/workflows/test.yml)
+[![Tests](https://github.com/ddmms/lavello_mlips/actions/workflows/test.yml/badge.svg)](https://github.com/ddmms/lavello_mlips/actions/workflows/test.yml)
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
-[![Docs](https://github.com/ddmms/process_omol25/actions/workflows/gh-pages.yml/badge.svg)](https://github.com/ddmms/process_omol25/actions/workflows/gh-pages.yml)
-[![Zenodo Publish](https://github.com/ddmms/process_omol25/actions/workflows/publish-zenodo.yml/badge.svg)](https://github.com/ddmms/process_omol25/actions/workflows/publish-zenodo.yml)
-[![PyPI version](https://img.shields.io/pypi/v/process_omol25.svg)](https://pypi.org/project/process_omol25/)
-[![Python versions](https://img.shields.io/pypi/pyversions/process_omol25.svg)](https://pypi.org/project/process_omol25/)
-[![License](https://img.shields.io/github/license/ddmms/process_omol25.svg)](LICENSE)
+[![Docs](https://github.com/ddmms/lavello_mlips/actions/workflows/gh-pages.yml/badge.svg)](https://github.com/ddmms/lavello_mlips/actions/workflows/gh-pages.yml)
+[![Zenodo Publish](https://github.com/ddmms/lavello_mlips/actions/workflows/publish-zenodo.yml/badge.svg)](https://github.com/ddmms/lavello_mlips/actions/workflows/publish-zenodo.yml)
+[![PyPI version](https://img.shields.io/pypi/v/lavello_mlips.svg)](https://pypi.org/project/lavello_mlips/)
+[![Python versions](https://img.shields.io/pypi/pyversions/lavello_mlips.svg)](https://pypi.org/project/lavello_mlips/)
+[![License](https://img.shields.io/github/license/ddmms/lavello_mlips.svg)](LICENSE)
 [![Zenodo](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 ![Coverage](https://img.shields.io/badge/coverage-20%25-brightgreen.svg)
