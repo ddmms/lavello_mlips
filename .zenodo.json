@@ -1,0 +1,12 @@
+{
+    "title": "lavello_mlips",
+    "description": "A Python package for processing omol-25 data using MPI.",
+    "creators": [
+        {
+            "name": "Alin M Elena"
+        }
+    ],
+    "access_right": "open",
+    "license": "BSD-3-Clause",
+    "upload_type": "software"
+}
