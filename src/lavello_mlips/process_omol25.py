@@ -99,33 +99,38 @@ def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
 
 
 # ---------- charge/multiplicity ----------
+# Pre-compiled regular expressions for performance in tight processing loops
+RE_CHARGE_PATTERNS = [
+    re.compile(r"Total\s+Charge\s*[:=]\s*(-?\d+)", flags=re.I),
+    re.compile(r"Overall\s+charge\s+of\s+the\s+system\s*[:=]\s*(-?\d+)", flags=re.I),
+]
+RE_MULTIPLICITY_PATTERN = re.compile(r"Multiplicity\s*[:=]\s*(\d+)", flags=re.I)
+RE_XYZ_FILE_PATTERN = re.compile(
+    r"^\s*\*\s*xyz(?:file)?\s+(-?\d+)\s+(\d+)\b.*$", flags=re.I | re.M
+)
+
 def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
     Q = None
     M = None
-    for pat in [
-        r"Total\s+Charge\s*[:=]\s*(-?\d+)",
-        r"Overall\s+charge\s+of\s+the\s+system\s*[:=]\s*(-?\d+)",
-        r"Multiplicity\s*[:=]\s*(\d+)",
-    ]:
-        for m in re.finditer(pat, txt, flags=re.I):
-            if "Multiplicity" in pat:
-                try:
-                    M = int(m.group(1))
-                except:
-                    pass
-            else:
-                try:
-                    Q = int(m.group(1))
-                except:
-                    pass
-    m = re.search(
-        r"^\s*\*\s*xyz(?:file)?\s+(-?\d+)\s+(\d+)\b.*$", txt, flags=re.I | re.M
-    )
+    for pat in RE_CHARGE_PATTERNS:
+        for m in pat.finditer(txt):
+            try:
+                Q = int(m.group(1))
+            except ValueError:
+                pass
+
+    for m in RE_MULTIPLICITY_PATTERN.finditer(txt):
+        try:
+            M = int(m.group(1))
+        except ValueError:
+            pass
+
+    m = RE_XYZ_FILE_PATTERN.search(txt)
     if m:
         try:
             Q = int(m.group(1))
             M = int(m.group(2))
-        except:
+        except ValueError:
             pass
     return Q, M
 
