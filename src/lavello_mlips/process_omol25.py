@@ -116,38 +116,22 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
         for m in pat.finditer(txt):
             try:
                 Q = int(m.group(1))
-            except ValueError as exc:
-                logging.debug(
-                    "Failed to parse charge from match %r with pattern %r: %s",
-                    m.group(1),
-                    pat.pattern,
-                    exc,
-                )
+            except ValueError:
+                pass
 
     for m in RE_MULTIPLICITY_PATTERN.finditer(txt):
         try:
             M = int(m.group(1))
-        except ValueError as exc:
-            logging.debug(
-                "Failed to parse multiplicity from match %r: %s",
-                m.group(1),
-                exc,
-            )
+        except ValueError:
+            pass
 
     m = RE_XYZ_FILE_PATTERN.search(txt)
     if m:
         try:
             Q = int(m.group(1))
             M = int(m.group(2))
-        except ValueError as exc:
-            logging.debug(
-                "Failed to parse charge/multiplicity from xyz file pattern %r "
-                "with groups %r and %r: %s",
-                RE_XYZ_FILE_PATTERN.pattern,
-                m.group(1),
-                m.group(2),
-                exc,
-            )
+        except ValueError:
+            pass
     return Q, M
 
 

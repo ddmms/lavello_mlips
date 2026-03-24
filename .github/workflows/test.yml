@@ -33,6 +33,11 @@ jobs:
     - name: Install Python dependencies
       run: uv sync --extra dev
 
+    - name: MPI Diagnostics
+      run: |
+        mpirun --version
+        uv run python -c "import mpi4py; print(mpi4py.get_config()); from mpi4py import MPI; print(f'MPI Version: {MPI.Get_library_version()}')"
+
     - name: Create dummy login file for tests
       run: |
         echo '{"user": "dummy", "access_key": "dummy", "secret_key": "dummy"}' > psdi-argonne-omol25-ro.json
