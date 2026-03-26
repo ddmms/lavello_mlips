@@ -2,7 +2,6 @@ import argparse
 import logging
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
-from json import load as json_load, dump as json_dump
 from io import BytesIO
 import tarfile
 from tarfile import open as tar_open
@@ -12,7 +11,7 @@ from botocore.config import Config
 from tqdm import tqdm
 import time
 
-from .utils import setup_logging
+from .utils import setup_logging, json_load, json_dump
 from mpi4py import MPI
 from mpi4py import MPI as mpi
 
