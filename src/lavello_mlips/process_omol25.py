@@ -117,19 +117,13 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
             try:
                 Q = int(m.group(1))
             except ValueError:
-                logging.debug(
-                    "Failed to parse charge from match %r in text segment; leaving Q unchanged",
-                    m.group(1),
-                )
+                pass
 
     for m in RE_MULTIPLICITY_PATTERN.finditer(txt):
         try:
             M = int(m.group(1))
         except ValueError:
-            logging.debug(
-                "Failed to parse multiplicity from match %r in text segment; leaving M unchanged",
-                m.group(1),
-            )
+            pass
 
     m = RE_XYZ_FILE_PATTERN.search(txt)
     if m:
@@ -137,11 +131,7 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
             Q = int(m.group(1))
             M = int(m.group(2))
         except ValueError:
-            logging.debug(
-                "Failed to parse charge/multiplicity from xyzfile match %r, %r; leaving Q/M unchanged",
-                m.group(1),
-                m.group(2),
-            )
+            pass
     return Q, M
 
 
