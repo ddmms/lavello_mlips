@@ -1,7 +1,22 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, Union, Any
+from typing import Optional, Union, Any, IO
+
+import orjson
+
+def json_load(fp: IO) -> Any:
+    """Wrapper around orjson.loads to act as a drop-in replacement for json.load."""
+    return orjson.loads(fp.read())
+
+def json_dump(obj: Any, fp: IO, indent: Optional[int] = None) -> None:
+    """Wrapper around orjson.dumps to act as a drop-in replacement for json.dump."""
+    option = orjson.OPT_INDENT_2 if indent else 0
+    data = orjson.dumps(obj, option=option)
+    if "b" in getattr(fp, "mode", "w"):
+        fp.write(data)
+    else:
+        fp.write(data.decode("utf-8"))
 
 def setup_logging(level: int = logging.INFO, log_file_path: Optional[Union[str, Path]] = None) -> None:
     """Configures the root logger with a console handler and an optional file handler."""

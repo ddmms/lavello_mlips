@@ -1,10 +1,11 @@
 import logging
-from json import load as json_load
 from pathlib import Path
 from typing import Optional, Union
 
 import boto3
 from botocore.config import Config
+
+from .utils import json_load
 
 logger = logging.getLogger(__name__)
 
