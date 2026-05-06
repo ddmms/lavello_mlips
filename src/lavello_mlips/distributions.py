@@ -5,7 +5,11 @@ from typing import Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import r2_score as r2, root_mean_squared_error as rmse, mean_absolute_error as mae
+from sklearn.metrics import (
+    r2_score as r2,
+    root_mean_squared_error as rmse,
+    mean_absolute_error as mae,
+)
 from ase.io import read
 from ase.atoms import Atoms
 from ase.formula import Formula
@@ -105,7 +109,7 @@ def plot_dual_histogram_alt(
 
     mbins = max(mxbins, mybins) if max(mxbins, mybins) < 50 else nbins_max
     if mbins == 1:
-       mbins = 2
+        mbins = 2
     histogram = (
         alt.Chart(data_pd)
         .mark_bar(opacity=0.7)
@@ -141,7 +145,7 @@ def plot_histogram_desc_alt(
     lab = set(x_pd["group"])
     mbins = mxbins if mxbins < 50 else nbins_max
     if mbins == 1:
-       mbins =2
+        mbins = 2
     histogram = (
         alt.Chart(x_pd)
         .mark_bar(opacity=0.7)
@@ -161,7 +165,15 @@ def plot_histogram_desc_alt(
 
 
 def plot_parity_alt(
-    x: list, y: list, labels: list, indices: list, title: str, xlabel: str, ylabel: str, unit: str, logger: logging.Logger = None,
+    x: list,
+    y: list,
+    labels: list,
+    indices: list,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    unit: str,
+    logger: logging.Logger = None,
 ):
     val_r2 = r2(x, y)
     val_rmse = rmse(x, y)
@@ -204,16 +216,14 @@ def plot_parity_alt(
         .encode(x=alt.X("x:Q"), y=alt.Y("y:Q"))
         .properties(width=300, height=300)
     )
-    er = f"r²={val_r2:.4f} RMSE={val_rmse * 1000:.4f} [m{unit}] MAE={val_mae *1000:.4f} [m{unit}]"
+    er = f"r²={val_r2:.4f} RMSE={val_rmse * 1000:.4f} [m{unit}] MAE={val_mae * 1000:.4f} [m{unit}]"
     if logger:
         logger.info(f"{er} {title}")
     else:
         print(f"{er} {title}")
 
     scatter_plot = (base + line).properties(
-        title=alt.Title(
-            f"{title}", subtitle=f"{er}"
-        ),
+        title=alt.Title(f"{title}", subtitle=f"{er}"),
         width=300,
         height=300,
     )
@@ -321,13 +331,18 @@ def _get_voigt_stress(stress_array: list) -> list:
     return []
 
 
-def extract_isolated_atoms(e0s: str | list[Atoms] | PosixPath, ref_tag: str, ml_tag: str) -> dict:
+def extract_isolated_atoms(
+    e0s: str | list[Atoms] | PosixPath, ref_tag: str, ml_tag: str
+) -> dict:
     """Loads single-atom reference energies from a file."""
     e0 = {}
     if isinstance(e0s, str) or isinstance(e0s, PosixPath):
         e0s = read(e0s, index=":")
     for atom in e0s:
-        if atom.info.get("config_type") == "IsolatedAtom" or atom.info.get("config_type") == "iso":
+        if (
+            atom.info.get("config_type") == "IsolatedAtom"
+            or atom.info.get("config_type") == "iso"
+        ):
             symbol = atom.get_chemical_symbols()[0]
             e0_ref = atom.info.get(ref_tag)
             e0_ml = atom.info.get(ml_tag)
@@ -343,7 +358,7 @@ def extract_data(
 ) -> ExtractedData:
     """Extracts energies, forces, stresses, and descriptors from a list of ASE Atoms objects or a file."""
     data = ExtractedData()
-    if isinstance(traj, str) or isinstance(traj,PosixPath):
+    if isinstance(traj, str) or isinstance(traj, PosixPath):
         frames = read(traj, index=":")
     else:
         frames = traj
@@ -499,7 +514,7 @@ def extract_and_plot(
     use_altair: bool = False,
     use_system_name: bool = False,
     parity_plots_only: bool = False,
-    logger = None,
+    logger=None,
 ):
     """
     Runs the full analysis and plotting pipeline.
@@ -521,7 +536,12 @@ def extract_and_plot(
         parity_plots_only: If True, only generate parity plots.
     """
     tags = set_tags(ml_tag, ref_tag)
-    data = extract_data(traj=xyz_path, E0=e0s_path, descriptor_scale_factor=descriptor_scale_factor, tags=tags)
+    data = extract_data(
+        traj=xyz_path,
+        E0=e0s_path,
+        descriptor_scale_factor=descriptor_scale_factor,
+        tags=tags,
+    )
 
     categories = sorted(list(set(data.labels)))
     colors = {cat: c for cat, c in zip(categories, plt.cm.tab10.colors)}
@@ -539,37 +559,85 @@ def extract_and_plot(
 
     plot_defs = [
         (
-            "Energies", "eV", data.ref_energies, data.ml_energies,
-            data.system_name if use_system_name else data.labels, data.index,
+            "Energies",
+            "eV",
+            data.ref_energies,
+            data.ml_energies,
+            data.system_name if use_system_name else data.labels,
+            data.index,
         ),
         (
-            "Energy/atom", "eV/atom", data.ref_energies_pan, data.ml_energies_pan,
-            data.system_name if use_system_name else data.labels, data.index,
+            "Energy/atom",
+            "eV/atom",
+            data.ref_energies_pan,
+            data.ml_energies_pan,
+            data.system_name if use_system_name else data.labels,
+            data.index,
         ),
         (
-            "Formation energy/atom", "eV/atom", data.ref_energies_pa, data.ml_energies_pa,
-            data.system_name if use_system_name else data.labels, data.index,
+            "Formation energy/atom",
+            "eV/atom",
+            data.ref_energies_pa,
+            data.ml_energies_pa,
+            data.system_name if use_system_name else data.labels,
+            data.index,
         ),
         (
-            "Formation energy/atom - DFT ref", "eV/atom", data.ref_energies_pa, data.ml_energies_pad,
-            data.system_name if use_system_name else data.labels, data.index,
+            "Formation energy/atom - DFT ref",
+            "eV/atom",
+            data.ref_energies_pa,
+            data.ml_energies_pad,
+            data.system_name if use_system_name else data.labels,
+            data.index,
         ),
         (
-            "Forces", "eV/Å", data.ref_forces, data.ml_forces,
-            data.system_name_forces if use_system_name else data.labels_forces, data.index_forces,
+            "Forces",
+            "eV/Å",
+            data.ref_forces,
+            data.ml_forces,
+            data.system_name_forces if use_system_name else data.labels_forces,
+            data.index_forces,
         ),
         (
-            "Stresses (Voigt)", "eV/Å³", data.ref_stresses, data.ml_stresses,
-            np.repeat(data.system_name if use_system_name else data.labels, 6), np.repeat(data.index, 6),
+            "Stresses (Voigt)",
+            "eV/Å³",
+            data.ref_stresses,
+            data.ml_stresses,
+            np.repeat(data.system_name if use_system_name else data.labels, 6),
+            np.repeat(data.index, 6),
         ),
     ]
     hist_defs = [
-        ("Energy Distribution", "Energy [eV]", {"ML": data.ml_energies, "Ref": data.ref_energies}),
-        ("Energy/atom Distribution", "Energy/atom [eV]", {"ML": data.ml_energies_pan, "Ref": data.ref_energies_pan}),
-        ("Formation Energy/atom Distribution", "Formation energy/atom [eV]", {"ML": data.ml_energies_pa, "Ref": data.ref_energies_pa}),
-        ("Formation Energy/atom Distribution DFT E0s", "Formation energy/atom [eV]", {"ML": data.ml_energies_pad, "Ref": data.ref_energies_pa}),
-        ("Force Component Distribution", "Force [eV/Å]", {"ML": data.ml_forces, "Ref": data.ref_forces}),
-        ("Stress Component Distribution", "Stress [eV/Å³]", {"ML": data.ml_stresses, "Ref": data.ref_stresses}),
+        (
+            "Energy Distribution",
+            "Energy [eV]",
+            {"ML": data.ml_energies, "Ref": data.ref_energies},
+        ),
+        (
+            "Energy/atom Distribution",
+            "Energy/atom [eV]",
+            {"ML": data.ml_energies_pan, "Ref": data.ref_energies_pan},
+        ),
+        (
+            "Formation Energy/atom Distribution",
+            "Formation energy/atom [eV]",
+            {"ML": data.ml_energies_pa, "Ref": data.ref_energies_pa},
+        ),
+        (
+            "Formation Energy/atom Distribution DFT E0s",
+            "Formation energy/atom [eV]",
+            {"ML": data.ml_energies_pad, "Ref": data.ref_energies_pa},
+        ),
+        (
+            "Force Component Distribution",
+            "Force [eV/Å]",
+            {"ML": data.ml_forces, "Ref": data.ref_forces},
+        ),
+        (
+            "Stress Component Distribution",
+            "Stress [eV/Å³]",
+            {"ML": data.ml_stresses, "Ref": data.ref_stresses},
+        ),
     ]
     desc_defs = [
         (data.desc_system, "descriptors [a.u.]", "System Descriptors", "System"),
@@ -592,7 +660,19 @@ def extract_and_plot(
         if plot_sections["parity"]:
             for name, unit, ref_d, ml_d, lbls, inds in plot_defs:
                 if len(ref_d) > 0 and len(ref_d) == len(ml_d):
-                    ppE.append(plot_parity_alt(x=ml_d, y=ref_d, labels=lbls, title=name, xlabel=f"{tags['ml_tag']} ", ylabel=f"{tags['ref_tag']} ", indices=inds, unit=unit,logger=logger))
+                    ppE.append(
+                        plot_parity_alt(
+                            x=ml_d,
+                            y=ref_d,
+                            labels=lbls,
+                            title=name,
+                            xlabel=f"{tags['ml_tag']} ",
+                            ylabel=f"{tags['ref_tag']} ",
+                            indices=inds,
+                            unit=unit,
+                            logger=logger,
+                        )
+                    )
             pE_raw = alt.hconcat(*ppE)
             all_graphs.append(pE_raw)
 
@@ -600,14 +680,27 @@ def extract_and_plot(
             hE = []
             for i, (hist_title, xlabel, hist_data) in enumerate(hist_defs):
                 if any(len(d) > 0 for d in hist_data.values()):
-                    hE.append(plot_dual_histogram_alt(ml=hist_data["ML"], ref=hist_data["Ref"], ml_label=tags["ml_tag"], ref_label=tags["ref_tag"], title=hist_title, xlabel=xlabel))
+                    hE.append(
+                        plot_dual_histogram_alt(
+                            ml=hist_data["ML"],
+                            ref=hist_data["Ref"],
+                            ml_label=tags["ml_tag"],
+                            ref_label=tags["ref_tag"],
+                            title=hist_title,
+                            xlabel=xlabel,
+                        )
+                    )
             hE_raw = alt.hconcat(*hE)
             all_graphs.append(hE_raw)
 
         dp = []
         if plot_sections["descriptors"]:
             for i, (d, xlabel, desc_title, legend) in enumerate(desc_defs):
-                dp.append(plot_histogram_desc_alt(x=d, xlabel=xlabel, title=desc_title, legend=legend))
+                dp.append(
+                    plot_histogram_desc_alt(
+                        x=d, xlabel=xlabel, title=desc_title, legend=legend
+                    )
+                )
             desc_raw = alt.hconcat(*dp).resolve_scale(color="independent")
             all_graphs.append(desc_raw)
 
@@ -615,8 +708,14 @@ def extract_and_plot(
             alt.vconcat(*all_graphs)
             .resolve_scale(color="independent")
             .properties(background=config["background"])
-            .configure_title(fontSize=config["font_title"], color=config["colour_title"])
-            .configure_axis(labelColor=config["colour_labels"], titleColor=config["colour_labels"], labelFontSize=config["font_label"])
+            .configure_title(
+                fontSize=config["font_title"], color=config["colour_title"]
+            )
+            .configure_axis(
+                labelColor=config["colour_labels"],
+                titleColor=config["colour_labels"],
+                labelFontSize=config["font_label"],
+            )
         )
         if save_path:
             final.save(f"{save_path}.html", inline=True)
@@ -627,16 +726,33 @@ def extract_and_plot(
             else:
                 print(f"Plot saved to {save_path}.html/png")
 
-    else: # Use Matplotlib
-        fig, axs = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(16, num_cols * num_rows), squeeze=False, constrained_layout=True)
-        plot_title = title or f"Parity Plots & Histograms: {ref_tag.upper()} vs {ml_tag.upper()}"
+    else:  # Use Matplotlib
+        fig, axs = plt.subplots(
+            nrows=num_rows,
+            ncols=num_cols,
+            figsize=(16, num_cols * num_rows),
+            squeeze=False,
+            constrained_layout=True,
+        )
+        plot_title = (
+            title or f"Parity Plots & Histograms: {ref_tag.upper()} vs {ml_tag.upper()}"
+        )
         fig.suptitle(plot_title, fontsize=16)
 
         current_row = 0
         if plot_sections["parity"]:
             for i, (name, unit, ref_d, ml_d, lbls, _) in enumerate(plot_defs):
                 if len(ref_d) > 0 and len(ref_d) == len(ml_d):
-                    plot_parity(axs[current_row, i], ref_d, ml_d, lbls, colors, name, unit, "Data")
+                    plot_parity(
+                        axs[current_row, i],
+                        ref_d,
+                        ml_d,
+                        lbls,
+                        colors,
+                        name,
+                        unit,
+                        "Data",
+                    )
                 else:
                     axs[current_row, i].axis("off")
             current_row += 1
@@ -652,18 +768,35 @@ def extract_and_plot(
         if plot_sections["descriptors"]:
             nc = 0
             if data.desc_system:
-                plot_histogram(axs[current_row, nc], {"System": data.desc_system}, "System Descriptors", "Descriptor Value")
+                plot_histogram(
+                    axs[current_row, nc],
+                    {"System": data.desc_system},
+                    "System Descriptors",
+                    "Descriptor Value",
+                )
             if data.desc_per_species:
                 nc += 1
-                plot_histogram(axs[current_row, nc], data.desc_per_species, "Per Species Descriptors", "Descriptor Value")
+                plot_histogram(
+                    axs[current_row, nc],
+                    data.desc_per_species,
+                    "Per Species Descriptors",
+                    "Descriptor Value",
+                )
             if data.desc_per_atom:
                 nc += 1
-                plot_histogram(axs[current_row, nc], data.desc_per_atom, "Per-Atom Descriptors", "Descriptor Value")
+                plot_histogram(
+                    axs[current_row, nc],
+                    data.desc_per_atom,
+                    "Per-Atom Descriptors",
+                    "Descriptor Value",
+                )
             for i in range(nc + 1, num_cols):
                 axs[current_row, i].axis("off")
 
         if save_path:
-            plt.savefig(f"{save_path}.png", transparent=True, dpi=300, bbox_inches="tight")
+            plt.savefig(
+                f"{save_path}.png", transparent=True, dpi=300, bbox_inches="tight"
+            )
             plt.savefig(f"{save_path}.svg", transparent=True, bbox_inches="tight")
             print(f"Plot saved to {save_path}.png/.svg")
         else:
@@ -689,4 +822,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

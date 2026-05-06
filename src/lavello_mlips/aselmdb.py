@@ -18,18 +18,20 @@ logger = logging.getLogger(__name__)
 # Special keys in aselmdb
 RESERVED_KEYS = ["nextid", "deleted_ids", "metadata"]
 
+
 class LMDBDatabase(ase.db.core.Database):
     """
     LMDB backend for ASE database, compatible with ase-db-backends aselmdb.
     Used by fairchem.core.datasets.AseDBDataset.
     """
+
     def __init__(self, filename: Union[str, Path], readonly: bool = False, **kwargs):
         super().__init__(filename)
         self.filename = Path(filename)
         self.readonly = readonly
         self._env = None
         self._open_lmdb_env()
-        
+
         # Load all ids based on keys in the DB.
         self.ids = []
         self.deleted_ids = set()
@@ -73,7 +75,9 @@ class LMDBDatabase(ase.db.core.Database):
         txn = self._get_txn(write=False)
         try:
             nextid_data = txn.get("nextid".encode("ascii"))
-            return decode_bytestream(nextid_data, json_decode=True) if nextid_data else 1
+            return (
+                decode_bytestream(nextid_data, json_decode=True) if nextid_data else 1
+            )
         finally:
             self._flush_txn(txn)
 
@@ -82,13 +86,21 @@ class LMDBDatabase(ase.db.core.Database):
         try:
             deleted_ids_data = txn.get("deleted_ids".encode("ascii"))
             if deleted_ids_data:
-                self.deleted_ids = set(decode_bytestream(deleted_ids_data, json_decode=True))
+                self.deleted_ids = set(
+                    decode_bytestream(deleted_ids_data, json_decode=True)
+                )
         finally:
             self._flush_txn(txn)
-        
+
         self.ids = [i for i in range(1, self._nextid) if i not in self.deleted_ids]
 
-    def _write(self, atoms: Union[Atoms, ase.db.row.AtomsRow], key_value_pairs=None, data=None, idx=None):
+    def _write(
+        self,
+        atoms: Union[Atoms, ase.db.row.AtomsRow],
+        key_value_pairs=None,
+        data=None,
+        idx=None,
+    ):
         if isinstance(atoms, ase.db.row.AtomsRow):
             row = atoms
             atoms_obj = row.toatoms()
@@ -105,6 +117,7 @@ class LMDBDatabase(ase.db.core.Database):
 
         # Capture atoms.info into key_value_pairs (scalars) and data (non-scalars)
         import numbers
+
         scalar_types = (numbers.Real, str, bool, np.bool_)
         for k, v in atoms_obj.info.items():
             if isinstance(v, scalar_types):
@@ -114,8 +127,14 @@ class LMDBDatabase(ase.db.core.Database):
 
         # Capture custom arrays into data
         standard_arrays = {
-            "numbers", "positions", "tags", "momenta", "masses",
-            "charges", "magmoms", "velocities"
+            "numbers",
+            "positions",
+            "tags",
+            "momenta",
+            "masses",
+            "charges",
+            "magmoms",
+            "velocities",
         }
         arrays_to_dump = {
             k: v for k, v in atoms_obj.arrays.items() if k not in standard_arrays
@@ -130,8 +149,8 @@ class LMDBDatabase(ase.db.core.Database):
             "cell": np.asarray(atoms_obj.get_cell()),
             "pbc": atoms_obj.get_pbc(),
             "mtime": ase.db.core.now(),
-            "ctime": getattr(row, 'ctime', ase.db.core.now()),
-            "user": getattr(row, 'user', os.getenv("USER")),
+            "ctime": getattr(row, "ctime", ase.db.core.now()),
+            "user": getattr(row, "user", os.getenv("USER")),
             "key_value_pairs": key_value_pairs,
             "data": data,
         }
@@ -144,10 +163,10 @@ class LMDBDatabase(ase.db.core.Database):
 
         if atoms_obj.get_tags().any():
             dct["tags"] = atoms_obj.get_tags()
-            
+
         # Cell conversion for JSON
         dct["cell"] = np.asarray(dct["cell"])
-        
+
         txn = self._get_txn(write=True)
         try:
             if idx is None:
@@ -156,14 +175,8 @@ class LMDBDatabase(ase.db.core.Database):
             else:
                 nextid = max(idx + 1, self._nextid)
 
-            txn.put(
-                str(idx).encode("ascii"),
-                encode_object(dct, json_encode=True)
-            )
-            txn.put(
-                "nextid".encode("ascii"),
-                encode_object(nextid, json_encode=True)
-            )
+            txn.put(str(idx).encode("ascii"), encode_object(dct, json_encode=True))
+            txn.put("nextid".encode("ascii"), encode_object(nextid, json_encode=True))
             if idx not in self.ids:
                 self.ids.append(idx)
             return idx
@@ -176,60 +189,63 @@ class LMDBDatabase(ase.db.core.Database):
             row_data = txn.get(str(idx).encode("ascii"))
         finally:
             self._flush_txn(txn)
-            
+
         if row_data is None:
             raise KeyError(f"ID {idx} not found")
-            
+
         dct = decode_bytestream(row_data, json_decode=True)
-        
+
         # Ensure calculator properties are numpy arrays
         from ase.calculators.calculator import all_properties
+
         for key in all_properties:
             if key in dct and isinstance(dct[key], list):
                 dct[key] = np.array(dct[key])
-        
+
         dct["id"] = idx
         return ase.db.row.AtomsRow(dct)
 
     def get_atoms(self, idx: int) -> Atoms:
         row = self._get_row(idx)
         atoms = row.toatoms()
-        
+
         # Restore scalars from key_value_pairs (ase-db doesn't always put them back in info)
-        if hasattr(row, 'key_value_pairs') and isinstance(row.key_value_pairs, dict):
+        if hasattr(row, "key_value_pairs") and isinstance(row.key_value_pairs, dict):
             atoms.info.update(row.key_value_pairs)
-            
+
         # Restore non-scalars from data['__info__'] and custom arrays from data['__arrays__']
         if isinstance(row.data, dict):
             if "__info__" in row.data:
                 atoms.info.update(row.data["__info__"])
             if "__arrays__" in row.data:
-                 for k, v in row.data["__arrays__"].items():
-                     if k not in atoms.arrays:
-                         atoms.new_array(k, np.array(v))
-            
+                for k, v in row.data["__arrays__"].items():
+                    if k not in atoms.arrays:
+                        atoms.new_array(k, np.array(v))
+
             # Also restore any other keys in data that are not the special ones
             for k, v in row.data.items():
                 if k not in ["__info__", "__arrays__"]:
                     atoms.info[k] = v
-            
+
         # Restore calculator properties
         results = {}
         # standard properties and any others stored in dct
         from ase.calculators.calculator import all_properties
-        for prop in list(all_properties) + ['free_energy']:
+
+        for prop in list(all_properties) + ["free_energy"]:
             val = getattr(row, prop, None)
             if val is not None:
                 results[prop] = val
-        
+
         # If still no energy, check info (historical/historical compatibility)
-        if 'energy' not in results and 'energy' in atoms.info:
-            results['energy'] = atoms.info['energy']
-        
+        if "energy" not in results and "energy" in atoms.info:
+            results["energy"] = atoms.info["energy"]
+
         if results:
             atoms.calc = SinglePointCalculator(atoms, **results)
-            
+
         return atoms
+
 
 def encode_object(obj: Any, compress=True, json_encode=True) -> bytes:
     """Encode object to compressed JSON."""
@@ -247,6 +263,7 @@ def encode_object(obj: Any, compress=True, json_encode=True) -> bytes:
         return zlib.compress(obj_bytes)
     return obj_bytes
 
+
 def decode_bytestream(bytestream: bytes, decompress=True, json_decode=True) -> Any:
     """Decode compressed JSON bytestream."""
     if decompress:
@@ -255,7 +272,7 @@ def decode_bytestream(bytestream: bytes, decompress=True, json_decode=True) -> A
     if json_decode:
         # ASE's custom JSON encoder uses special keys like __ndarray__, __complex__, etc.
         # If the payload contains these, we must use ASE's decoder to reconstruct the objects.
-        if b'__ndarray__' in bytestream or b'__complex__' in bytestream:
+        if b"__ndarray__" in bytestream or b"__complex__" in bytestream:
             return decode(bytestream.decode("utf-8"))
 
         try:

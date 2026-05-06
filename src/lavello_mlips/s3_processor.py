@@ -9,13 +9,19 @@ from .utils import json_load
 
 logger = logging.getLogger(__name__)
 
+
 class S3DataProcessor:
     """
     Base class for S3 and local data access logic.
     Focuses on credentials and client initialization.
     """
 
-    def __init__(self, login_file: Optional[Union[str, Path]], bucket: str, local_dir: Optional[Union[str, Path]] = None) -> None:
+    def __init__(
+        self,
+        login_file: Optional[Union[str, Path]],
+        bucket: str,
+        local_dir: Optional[Union[str, Path]] = None,
+    ) -> None:
         self.login_file = login_file
         self.bucket = bucket
         self.local_dir = Path(local_dir) if local_dir else None
@@ -30,9 +36,11 @@ class S3DataProcessor:
         """Initializes and returns a boto3 S3 client if not in local mode."""
         if self.local_dir:
             return None
-        
+
         if not self.creds:
-            raise ValueError("Credentials are required for S3 access when local_dir is not provided.")
+            raise ValueError(
+                "Credentials are required for S3 access when local_dir is not provided."
+            )
 
         return boto3.client(
             "s3",
