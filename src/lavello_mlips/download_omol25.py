@@ -67,7 +67,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def process_prefix(x: str, data: Dict[str, Any], args: argparse.Namespace, s3_client: Any) -> Optional[str]:
+def process_prefix(
+    x: str, data: Dict[str, Any], args: argparse.Namespace, s3_client: Any
+) -> Optional[str]:
     """Processes a single prefix synchronously."""
     raw_key = data[x]["key"]
     key_list = [raw_key] if isinstance(raw_key, str) else raw_key
@@ -139,7 +141,13 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
         raise
 
 
-def manager_loop(keys: List[str], data: Dict[str, Any], restart_file: Union[str, Path], comm: Any, size: int) -> None:
+def manager_loop(
+    keys: List[str],
+    data: Dict[str, Any],
+    restart_file: Union[str, Path],
+    comm: Any,
+    size: int,
+) -> None:
     """Rank 0 Dispatcher for downloads (Synchronous)."""
     start_time = time.time()
     logger.info(f"Download Manager starting with {size - 1} workers.")
@@ -205,7 +213,9 @@ def worker_loop(data: Dict[str, Any], args: argparse.Namespace, comm: Any) -> No
         pass
 
 
-def download_serial(keys: List[str], data: Dict[str, Any], args: argparse.Namespace) -> None:
+def download_serial(
+    keys: List[str], data: Dict[str, Any], args: argparse.Namespace
+) -> None:
     """Serial download (Synchronous)."""
     start_time = time.time()
     s3_client = None
