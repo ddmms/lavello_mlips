@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-05-10 - Hashing overhead from repetitive `.update()` and `.encode()` in Python loops
+**Learning:** Repetitive execution of string encoding and hasher updating within a pure Python loop (`h.update(f"...".encode())`) introduces measurable overhead. Using a generator expression to build a single string string and then performing a single `.encode("ascii")` and hash step improves throughput by mitigating iterative function call latency. Furthermore, specifying `"ascii"` explicitly when parsing coordinates avoids the slower UTF-8 default.
+**Action:** Consolidate string chunks meant for hashing using `.join()` prior to encoding whenever feasible inside frequently executed code paths.
