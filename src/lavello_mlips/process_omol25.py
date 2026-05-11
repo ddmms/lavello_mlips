@@ -64,6 +64,8 @@ RE_QUAD = re.compile(
 def parse_quadrupole(txt: str) -> Optional[Tuple[float, float, float, float, float, float, float]]:
     if not txt:
         return None
+    if "Buckingham" not in txt:
+        return None
     match = RE_QUAD.search(txt)
 
     if match:
@@ -78,9 +80,13 @@ def parse_quadrupole(txt: str) -> Optional[Tuple[float, float, float, float, flo
 def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
     if not txt:
         return None
+    if "Dipole" not in txt and "dipole" not in txt and "DIPOLE" not in txt:
+        return None
     best = None
     for m in RE_DIP.finditer(txt):
-        unit = (m.group(1) or "").lower()
+        unit = (m.group(1) or "")
+        if unit:
+            unit = unit.lower()
         x, y, z = map(float, m.group(2, 3, 4))
         if unit == "a.u.":
             x, y, z = x * AU2D, y * AU2D, z * AU2D
@@ -103,24 +109,30 @@ RE_XYZ = re.compile(r"^\s*\*\s*xyz(?:file)?\s+(-?\d+)\s+(\d+)\b.*$", flags=re.I 
 def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
     Q = None
     M = None
-    for m in RE_CHARGE_MULT.finditer(txt):
-        q_match = m.group(1)
-        if q_match is not None:
-            try:
-                Q = int(q_match)
-            except ValueError:
-                # Ignore unparsable charge value; leave Q as-is (None or previous match).
-                logger.debug("Failed to parse charge value from match %r in text; ignoring.", q_match)
-        else:
-            m_match = m.group(2)
-            if m_match is not None:
-                try:
-                    M = int(m_match)
-                except ValueError:
-                    # Ignore unparsable multiplicity value; leave M as-is (None or previous match).
-                    logger.debug("Failed to parse multiplicity value from match %r in text; ignoring.", m_match)
 
-    m = RE_XYZ.search(txt)
+    # Fast path string checks
+    if "harge" in txt or "HARGE" in txt or "multiplicity" in txt or "Multiplicity" in txt or "MULTIPLICITY" in txt:
+        for m in RE_CHARGE_MULT.finditer(txt):
+            q_match = m.group(1)
+            if q_match is not None:
+                try:
+                    Q = int(q_match)
+                except ValueError:
+                    # Ignore unparsable charge value; leave Q as-is (None or previous match).
+                    logger.debug("Failed to parse charge value from match %r in text; ignoring.", q_match)
+            else:
+                m_match = m.group(2)
+                if m_match is not None:
+                    try:
+                        M = int(m_match)
+                    except ValueError:
+                        # Ignore unparsable multiplicity value; leave M as-is (None or previous match).
+                        logger.debug("Failed to parse multiplicity value from match %r in text; ignoring.", m_match)
+
+    m = None
+    if "xyz" in txt or "XYZ" in txt or "Xyz" in txt:
+        m = RE_XYZ.search(txt)
+
     if m:
         try:
             Q = int(m.group(1))
@@ -176,11 +188,18 @@ def homo_lumo(evals, occs, thr=1e-3):
 def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
     if not txt:
         return None
+    # Fast path string checks
+    if "E(Eh)" not in txt or "OCC" not in txt:
+        return None
+
     lines = txt.splitlines()
     blocks = []
     i = 0
-    while i < len(lines):
-        if RE_COLS.search(lines[i]):
+    num_lines = len(lines)
+    while i < num_lines:
+        line = lines[i]
+        # Skip regex if OCC is not even in the line
+        if "OCC" in line and RE_COLS.search(line):
             tag = "R"
             back = (
                 (lines[i - 1].upper() if i >= 1 else "")
@@ -193,13 +212,17 @@ def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
                 tag = "B"
             i += 1
             rows = []
-            while i < len(lines):
+            while i < num_lines:
                 row = lines[i]
-                if not row.strip() or not any(ch.isdigit() for ch in row):
+                r_strip = row.strip()
+                if not r_strip:
                     break
                 m = RE_ROW.match(row) or RE_ROW_T.match(row)
                 if not m:
-                    break
+                    if not any(ch.isdigit() for ch in row):
+                        break
+                    else:
+                        break
                 occ = float(m.group(1))
                 e_ev = float(m.group(3))
                 rows.append((occ, e_ev))
