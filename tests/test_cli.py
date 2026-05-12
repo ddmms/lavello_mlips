@@ -1,10 +1,10 @@
 import sys
 import logging
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 from lavello_mlips.cli import main as cli_main
+
 
 def test_cli_serial(tmp_path):
     """Test CLI orchestration in serial mode."""
@@ -17,17 +17,23 @@ def test_cli_serial(tmp_path):
 
     test_args = [
         "lavello-mlips",
-        "--data-source", str(data_source),
-        "--login-file", str(login_file),
-        "--output-dir", str(output_dir),
-        "--sample-size", "10",
-        "--batch-size", "5"
+        "--data-source",
+        str(data_source),
+        "--login-file",
+        str(login_file),
+        "--output-dir",
+        str(output_dir),
+        "--sample-size",
+        "10",
+        "--batch-size",
+        "5",
     ]
 
-    with patch.object(sys, "argv", test_args), \
-         patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor, \
-         patch("lavello_mlips.cli.setup_logging") as mock_setup_logging:
-        
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor,
+        patch("lavello_mlips.cli.setup_logging") as mock_setup_logging,
+    ):
         mock_instance = MockProcessor.return_value
         cli_main()
 
@@ -47,6 +53,7 @@ def test_cli_serial(tmp_path):
         # Verify setup_logging was called
         mock_setup_logging.assert_called_once()
 
+
 def test_cli_mpi(tmp_path):
     """Test CLI orchestration in MPI mode."""
     data_source = tmp_path / "train_mpi.json"
@@ -56,10 +63,13 @@ def test_cli_mpi(tmp_path):
 
     test_args = [
         "lavello-mlips",
-        "--data-source", str(data_source),
-        "--local-dir", str(local_dir),
+        "--data-source",
+        str(data_source),
+        "--local-dir",
+        str(local_dir),
         "--mpi",
-        "--log-level", "DEBUG"
+        "--log-level",
+        "DEBUG",
     ]
 
     # Mock MPI stuff
@@ -67,11 +77,12 @@ def test_cli_mpi(tmp_path):
     mock_comm.Get_rank.return_value = 0
     mock_comm.Get_size.return_value = 4
 
-    with patch.object(sys, "argv", test_args), \
-         patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor, \
-         patch("lavello_mlips.cli.mpi") as mock_mpi, \
-         patch("lavello_mlips.cli.setup_logging") as mock_setup_logging:
-        
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor,
+        patch("lavello_mlips.cli.mpi") as mock_mpi,
+        patch("lavello_mlips.cli.setup_logging") as mock_setup_logging,
+    ):
         mock_mpi.COMM_WORLD = mock_comm
         cli_main()
 
@@ -88,22 +99,22 @@ def test_cli_mpi(tmp_path):
         mock_setup_logging.assert_called_once()
         assert mock_setup_logging.call_args[1]["level"] == logging.DEBUG
 
+
 def test_cli_error_no_credentials(tmp_path):
     """Test that CLI raises ValueError if no credentials provided."""
     data_source = tmp_path / "train_err.json"
     data_source.write_text("{}")
 
-    test_args = [
-        "lavello-mlips",
-        "--data-source", str(data_source)
-    ]
+    test_args = ["lavello-mlips", "--data-source", str(data_source)]
 
-    with patch.object(sys, "argv", test_args), \
-         patch("lavello_mlips.cli.OmolDataProcessor"), \
-         patch("lavello_mlips.cli.setup_logging"):
-        
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("lavello_mlips.cli.OmolDataProcessor"),
+        patch("lavello_mlips.cli.setup_logging"),
+    ):
         with pytest.raises(ValueError, match="--login-file is required"):
             cli_main()
+
 
 def test_cli_worker_rank_no_logging(tmp_path):
     """Test that rank > 0 does not setup logging."""
@@ -114,20 +125,23 @@ def test_cli_worker_rank_no_logging(tmp_path):
 
     test_args = [
         "lavello-mlips",
-        "--data-source", str(data_source),
-        "--local-dir", str(local_dir),
-        "--mpi"
+        "--data-source",
+        str(data_source),
+        "--local-dir",
+        str(local_dir),
+        "--mpi",
     ]
 
     mock_comm = MagicMock()
     mock_comm.Get_rank.return_value = 1
     mock_comm.Get_size.return_value = 4
 
-    with patch.object(sys, "argv", test_args), \
-         patch("lavello_mlips.cli.OmolDataProcessor"), \
-         patch("lavello_mlips.cli.mpi") as mock_mpi, \
-         patch("lavello_mlips.cli.setup_logging") as mock_setup_logging:
-        
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("lavello_mlips.cli.OmolDataProcessor"),
+        patch("lavello_mlips.cli.mpi") as mock_mpi,
+        patch("lavello_mlips.cli.setup_logging") as mock_setup_logging,
+    ):
         mock_mpi.COMM_WORLD = mock_comm
         cli_main()
 
