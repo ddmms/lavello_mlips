@@ -62,7 +62,8 @@ RE_QUAD = re.compile(
 
 
 def parse_quadrupole(txt: str) -> Optional[Tuple[float, float, float, float, float, float, float]]:
-    if not txt:
+    # Fast path check to avoid executing regex on non-matching strings
+    if not txt or "Buckingham" not in txt:
         return None
     match = RE_QUAD.search(txt)
 
@@ -145,12 +146,9 @@ def cnc(Z, coords):
 
 
 def geom_sha1(elems, coords, ndp: int = 6) -> Optional[str]:
-    h = hashlib.sha1()
-    for e, (x, y, z) in zip(elems, coords):
-        h.update(
-            f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};".encode()
-        )
-    return h.hexdigest()
+    # Use list comprehension and join for a single ascii encode and single hash update instead of iterative updates for performance
+    s = "".join(f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};" for e, (x, y, z) in zip(elems, coords))
+    return hashlib.sha1(s.encode("ascii")).hexdigest()
 
 
 # ---------- eigenvalues ----------
@@ -174,7 +172,8 @@ def homo_lumo(evals, occs, thr=1e-3):
 
 
 def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
-    if not txt:
+    # Fast path check to avoid splitting and iterating over lines on non-matching strings
+    if not txt or "NO" not in txt or "OCC" not in txt or "eV" not in txt:
         return None
     lines = txt.splitlines()
     blocks = []
