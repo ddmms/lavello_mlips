@@ -1,10 +1,7 @@
-## 2024-03-25 - Pre-compiling Regex in performance-critical loops
-**Learning:** Initializing `re` matches inside loops without pre-compiling adds significant overhead. Profiling regex performance specifically in `parse_charge_mult` showed that dynamic matching creates a ~1.5x-2x performance bottleneck over 100k invocations compared to `re.compile()` at the module level.
-**Action:** Always extract regex expressions into pre-compiled module-level constants (e.g., `RE_CHARGE`, `RE_XYZ`) instead of defining them inline, especially in frequently called parsing loops.
+## 2024-05-16 - [Fast Text Parsing in Omol25 Data Processing]
+**Learning:** Performing `re.finditer` or `re.search` over large text blocks (e.g. combined string dumps of multiple output files like Orca outputs) adds huge overhead if the target properties (dipole, quadrupole, eigens, charge/mult) don't even exist in the text.
+**Action:** Adding a fast-path string literal check via Python's `in` operator (e.g. `if "E(Eh)" not in txt or "E(eV)" not in txt: return None`) before running the regex drastically drops parsing times from seconds to milliseconds for texts missing the targets.
 
-## 2024-05-18 - Replacing `json` with `orjson` for large datasets
-**Learning:** In pipelines handling large datasets via dictionaries containing metadata (e.g. millions of prefixes), `json.dump` and `json.load` can become significant bottlenecks, adding seconds or even minutes to startup and checkpointing phases. `orjson` provides a near drop-in replacement that is 4-10x faster for such operations.
-**Action:** When working with large JSON files, especially in a framework requiring frequent disk checkpoints, replace Python's built-in `json` module with `orjson` wrapping `loads`/`dumps` to preserve API compatibility while gaining massive performance boosts.
-## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
-**Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
-**Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+## 2024-05-16 - [Fast Text Parsing in Omol25 Data Processing]
+**Learning:** Performing `re.finditer` or `re.search` over large text blocks (e.g. combined string dumps of multiple output files like Orca outputs) adds huge overhead if the target properties (dipole, quadrupole, eigens, charge/mult) don't even exist in the text.
+**Action:** Adding a fast-path string literal check via Python's `in` operator (e.g. `if "E(Eh)" not in txt or "E(eV)" not in txt: return None`) before running the regex drastically drops parsing times from seconds to milliseconds for texts missing the targets.
