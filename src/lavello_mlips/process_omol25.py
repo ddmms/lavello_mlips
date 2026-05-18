@@ -134,14 +134,13 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
 
 
 def cog(coords):
-    return [sum(v[i] for v in coords) / (len(coords)) for i in range(3)]
+    # Vectorized computation of center of geometry for performance
+    return np.mean(coords, axis=0).tolist()
 
 
 def cnc(Z, coords):
-    Zsum = sum(Z)
-    return [
-        sum(Z[k] * coords[k][i] for k in range(len(coords))) / Zsum for i in range(3)
-    ]
+    # Vectorized computation of center of charge for performance
+    return np.average(coords, axis=0, weights=Z).tolist()
 
 
 def geom_sha1(elems, coords, ndp: int = 6) -> Optional[str]:
