@@ -145,12 +145,8 @@ def cnc(Z, coords):
 
 
 def geom_sha1(elems, coords, ndp: int = 6) -> Optional[str]:
-    h = hashlib.sha1()
-    for e, (x, y, z) in zip(elems, coords):
-        h.update(
-            f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};".encode()
-        )
-    return h.hexdigest()
+    s = "".join(f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};" for e, (x, y, z) in zip(elems, coords))
+    return hashlib.sha1(s.encode("ascii")).hexdigest()
 
 
 # ---------- eigenvalues ----------
@@ -163,14 +159,38 @@ RE_ROW_T = re.compile(rf"^\s*\d+\s+({RE_FLOAT})\s+({RE_FLOAT})\s+({RE_FLOAT})\s+
 def homo_lumo(evals, occs, thr=1e-3):
     if not evals:
         return None, None
-    occ_idx = [i for i, o in enumerate(occs) if o is not None and o > thr]
-    virt_idx = [i for i, o in enumerate(occs) if o is not None and o <= thr]
-    if not occ_idx:
-        return None, (evals[virt_idx[0]] if virt_idx else None)
-    h = max(occ_idx)
-    virt_above = [i for i in virt_idx if i > h] or virt_idx
-    l = min(virt_above) if virt_above else None
-    return evals[h], (evals[l] if l is not None else None)
+
+    # Find highest occupied index (h) by iterating backwards
+    h = -1
+    for i in range(len(occs) - 1, -1, -1):
+        o = occs[i]
+        if o is not None and o > thr:
+            h = i
+            break
+
+    if h == -1:
+        for i in range(len(occs)):
+            o = occs[i]
+            if o is not None and o <= thr:
+                return None, evals[i]
+        return None, None
+
+    # Find lowest unoccupied index (l_idx) above h, or fallback
+    l_idx = -1
+    for i in range(h + 1, len(occs)):
+        o = occs[i]
+        if o is not None and o <= thr:
+            l_idx = i
+            break
+
+    if l_idx == -1:
+        for i in range(len(occs)):
+            o = occs[i]
+            if o is not None and o <= thr:
+                l_idx = i
+                break
+
+    return evals[h], (evals[l_idx] if l_idx != -1 else None)
 
 
 def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
