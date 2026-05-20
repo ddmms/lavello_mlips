@@ -19,6 +19,7 @@ from zstandard import ZstdDecompressor
 
 import ase.parallel
 from ase.parallel import DummyMPI
+
 ase.parallel.world = DummyMPI()
 
 from .s3_processor import S3DataProcessor
@@ -61,9 +62,16 @@ RE_QUAD = re.compile(
 )
 
 
-def parse_quadrupole(txt: str) -> Optional[Tuple[float, float, float, float, float, float, float]]:
+def parse_quadrupole(
+    txt: str,
+) -> Optional[Tuple[float, float, float, float, float, float, float]]:
     if not txt:
         return None
+    # ⚡ Bolt Optimization: Fast-path string literal check
+    # Avoids running the expensive RE_QUAD regex if the text definitively lacks the target pattern.
+    if "TOT" not in txt:
+        return None
+
     match = RE_QUAD.search(txt)
 
     if match:
@@ -78,6 +86,11 @@ def parse_quadrupole(txt: str) -> Optional[Tuple[float, float, float, float, flo
 def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
     if not txt:
         return None
+    # ⚡ Bolt Optimization: Fast-path string literal check
+    # Skips executing the complex RE_DIP expression on large string blocks when 'ipole' or 'IPOLE' is absent.
+    if "ipole" not in txt and "IPOLE" not in txt:
+        return None
+
     best = None
     for m in RE_DIP.finditer(txt):
         unit = (m.group(1) or "").lower()
@@ -97,39 +110,60 @@ def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
 # ---------- charge/multiplicity ----------
 RE_CHARGE_MULT = re.compile(
     r"(?:Total\s+Charge|Overall\s+charge\s+of\s+the\s+system)\s*[:=]\s*(-?\d+)|"
-    r"Multiplicity\s*[:=]\s*(\d+)", re.I)
+    r"Multiplicity\s*[:=]\s*(\d+)",
+    re.I,
+)
 RE_XYZ = re.compile(r"^\s*\*\s*xyz(?:file)?\s+(-?\d+)\s+(\d+)\b.*$", flags=re.I | re.M)
+
 
 def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
     Q = None
     M = None
-    for m in RE_CHARGE_MULT.finditer(txt):
-        q_match = m.group(1)
-        if q_match is not None:
-            try:
-                Q = int(q_match)
-            except ValueError:
-                # Ignore unparsable charge value; leave Q as-is (None or previous match).
-                logger.debug("Failed to parse charge value from match %r in text; ignoring.", q_match)
-        else:
-            m_match = m.group(2)
-            if m_match is not None:
-                try:
-                    M = int(m_match)
-                except ValueError:
-                    # Ignore unparsable multiplicity value; leave M as-is (None or previous match).
-                    logger.debug("Failed to parse multiplicity value from match %r in text; ignoring.", m_match)
 
-    m = RE_XYZ.search(txt)
-    if m:
-        try:
-            Q = int(m.group(1))
-            M = int(m.group(2))
-        except ValueError:
-            # Ignore unparsable XYZ header values; leave Q/M as determined above.
-            logger.debug(
-                "Failed to parse charge/multiplicity from XYZ header match %r; ignoring.", m.groups()
-            )
+    if not txt:
+        return Q, M
+
+    # ⚡ Bolt Optimization: Fast-path string literal check
+    # Validates substrings first to prevent regex invocation if text lacks expected target keywords.
+    has_charge = "harge" in txt or "HARGE" in txt
+    has_mult = "ultiplicity" in txt or "ULTIPLICITY" in txt
+
+    if has_charge or has_mult:
+        for m in RE_CHARGE_MULT.finditer(txt):
+            q_match = m.group(1)
+            if q_match is not None:
+                try:
+                    Q = int(q_match)
+                except ValueError:
+                    # Ignore unparsable charge value; leave Q as-is (None or previous match).
+                    logger.debug(
+                        "Failed to parse charge value from match %r in text; ignoring.",
+                        q_match,
+                    )
+            else:
+                m_match = m.group(2)
+                if m_match is not None:
+                    try:
+                        M = int(m_match)
+                    except ValueError:
+                        # Ignore unparsable multiplicity value; leave M as-is (None or previous match).
+                        logger.debug(
+                            "Failed to parse multiplicity value from match %r in text; ignoring.",
+                            m_match,
+                        )
+
+    if "xyz" in txt or "XYZ" in txt:
+        m = RE_XYZ.search(txt)
+        if m:
+            try:
+                Q = int(m.group(1))
+                M = int(m.group(2))
+            except ValueError:
+                # Ignore unparsable XYZ header values; leave Q/M as determined above.
+                logger.debug(
+                    "Failed to parse charge/multiplicity from XYZ header match %r; ignoring.",
+                    m.groups(),
+                )
     return Q, M
 
 
@@ -145,12 +179,14 @@ def cnc(Z, coords):
 
 
 def geom_sha1(elems, coords, ndp: int = 6) -> Optional[str]:
-    h = hashlib.sha1()
-    for e, (x, y, z) in zip(elems, coords):
-        h.update(
-            f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};".encode()
-        )
-    return h.hexdigest()
+    # ⚡ Bolt Optimization: Hashing performance
+    # Replaces looping `.update()` calls with a single generator expression `.join()` and a unified `.encode()`,
+    # reducing overhead during repetitive molecular fingerprinting operations.
+    s = "".join(
+        f"{e}:{round(x, ndp):.6f}:{round(y, ndp):.6f}:{round(z, ndp):.6f};"
+        for e, (x, y, z) in zip(elems, coords)
+    )
+    return hashlib.sha1(s.encode()).hexdigest()
 
 
 # ---------- eigenvalues ----------
@@ -169,13 +205,18 @@ def homo_lumo(evals, occs, thr=1e-3):
         return None, (evals[virt_idx[0]] if virt_idx else None)
     h = max(occ_idx)
     virt_above = [i for i in virt_idx if i > h] or virt_idx
-    l = min(virt_above) if virt_above else None
-    return evals[h], (evals[l] if l is not None else None)
+    l_idx = min(virt_above) if virt_above else None
+    return evals[h], (evals[l_idx] if l_idx is not None else None)
 
 
 def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
     if not txt:
         return None
+    # ⚡ Bolt Optimization: Fast-path string literal check
+    # Avoids expensive splitlines and block scanning when no eigenvalue markers are present.
+    if "OCC" not in txt and "occ" not in txt and "Occ" not in txt:
+        return None
+
     lines = txt.splitlines()
     blocks = []
     i = 0
@@ -265,7 +306,9 @@ class OmolDataProcessor(S3DataProcessor):
     Derived processor for Omol data, handling MPI orchestration and Orca parsing.
     """
 
-    def __init__(self, args: argparse.Namespace, rank: int, size: int, comm: Any) -> None:
+    def __init__(
+        self, args: argparse.Namespace, rank: int, size: int, comm: Any
+    ) -> None:
         super().__init__(args.login_file, args.bucket, args.local_dir)
         self.args = args
         self.rank = rank
@@ -404,7 +447,9 @@ class OmolDataProcessor(S3DataProcessor):
         if self.rank == 0:
             logger.info(f"Using flush batch size of {self.batch_size}")
 
-    def flush_recs(self, recs: List[Dict[str, Any]], all_atoms: Optional[List[Any]] = None) -> None:
+    def flush_recs(
+        self, recs: List[Dict[str, Any]], all_atoms: Optional[List[Any]] = None
+    ) -> None:
         """Flush a batch of records to Parquet, and optionally atoms to ExtXYZ."""
         if not recs:
             return
@@ -422,7 +467,9 @@ class OmolDataProcessor(S3DataProcessor):
             write(str(xyz_path), all_atoms, format="extxyz")
         self.chunk_idx += 1
 
-    def _process_buffer(self, buffer: BytesIO, x: str) -> Optional[Tuple[Dict[str, Any], Any]]:
+    def _process_buffer(
+        self, buffer: BytesIO, x: str
+    ) -> Optional[Tuple[Dict[str, Any], Any]]:
         """Parse a .tar.zst buffer; returns (rec dict, ASE Atoms) or None."""
         rec: Dict[str, Any] = {}
         try:
@@ -532,7 +579,9 @@ class OmolDataProcessor(S3DataProcessor):
             logger.error(f"Error parsing buffer for {x}: {e}")
             return None
 
-    def process_single(self, idx: int, s3_client: Any = None) -> Optional[Tuple[Dict[str, Any], Any, str]]:
+    def process_single(
+        self, idx: int, s3_client: Any = None
+    ) -> Optional[Tuple[Dict[str, Any], Any, str]]:
         """Processes a single task synchronously. Returns (rec, atoms, x) or None."""
         start_time = time.time()
         x = self.prefixes[idx]
@@ -787,5 +836,6 @@ class OmolDataProcessor(S3DataProcessor):
             self._final_merge(time.time() - start_time)
         finally:
             pass
+
 
 logger = logging.getLogger(__name__)
