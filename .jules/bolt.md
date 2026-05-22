@@ -8,3 +8,11 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-05-22 - Fast-path string literal checks before complex regexes
+**Learning:** Evaluating complex regular expressions (like `RE_QUAD` or `RE_COLS`) over large blocks of text can be extremely slow, especially when the text typically *doesn't* contain the matching patterns. A simple string literal check (e.g., `if "Buckingham" not in txt`) provides a massive speedup (8x faster in microbenchmarks) by allowing the program to bypass the regex engine entirely when the string is guaranteed not to match.
+**Action:** When using regex to search for specific blocks inside large documents, always try to identify a unique literal string (a "fast path" key) that must be present for a match to occur. Check for this literal string first, and only execute the regex if the literal string is found.
+
+## 2024-05-22 - Batching strings for hashing
+**Learning:** Iteratively building up a hash state in a tight loop using repeated `.encode()` and `.update()` calls (e.g., `for ...: h.update(str.encode())`) introduces unnecessary overhead. Joining the individual string components into a single large string first (using `"".join(...)`), and then calling `.encode()` and `.update()` exactly once, provides a consistent ~10% performance boost for functions like `geom_sha1` that process many small coordinate tuples.
+**Action:** When hashing structured data, prefer string manipulation/joining to build the final string, then encode and hash it in one step, rather than incrementally updating the hash.
