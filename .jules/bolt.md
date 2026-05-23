@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-05-20 - Adding fast-path text checks correctly
+**Learning:** Checking for string existence (`if "Charge" in txt`) is much faster than regex searching over large texts, but using `.lower()` on a massive string (e.g. `txt.lower()`) to perform a case-insensitive check forces Python to allocate a huge duplicate string in memory, actually making the parsing much slower and memory-intensive than just letting the C regex engine handle it.
+**Action:** When adding fast-paths to parsing logic, avoid `txt.lower()`. Instead, check for specific exact substrings (`if "Charge" in txt or "charge" in txt`), or fall back to the regex directly.
