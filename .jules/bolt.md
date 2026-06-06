@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-06-06 - Short-circuiting Regex with specific matchers
+**Learning:** When multiple regex patterns are used to extract the same data from a large text block, executing a slow, complex, global search (`finditer`) for all elements unconditionally is very slow. By prioritizing an execution of a fast, anchored regex (e.g., specific file headers) first, we can return early and completely bypass the slower search, yielding massive (>100x) performance improvements.
+**Action:** When parsing large text blocks with multiple regexes, always identify and prioritize executing the most specific, fastest, and anchored regexes first to enable early returns.
