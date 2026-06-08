@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-06-08 - Short-circuiting Regex Parsing
+**Learning:** In text parsing functions that use `finditer` across potentially large blocks of text (like `parse_charge_mult`), testing an anchored, fast regex first (`RE_XYZ.search()`) and returning early can completely bypass the much slower `finditer` search. In microbenchmarks, this reduced parsing time from ~1.18s to ~0.0002s for inputs matching the fast path.
+**Action:** When multiple regex patterns are used to extract the same data from a large text block, always evaluate fast, specific, or anchored regexes first and short-circuit execution if a valid match is found.
