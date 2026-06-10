@@ -1,0 +1,72 @@
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/FXeNSO2F2_step20_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/FXeNSO2F2_step21_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/FXeNSO2F2_step7_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/H4XeO4_step24_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/H4XeO6_step2_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/HCNKrF+_step25_1_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/HXeOH_step10_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/O2XeF4_step1_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/O2XeF4_step3_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/OXeF2_step5_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeC6F52_step10_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeC6F52_step4_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeC6F5CN_step9_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeC6F5F2+_step11_1_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeC6F5F2+_step26_1_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeCl4_step2_0_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeF7-_step2_-1_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
+2
+Properties=species:S:1:pos:R:3 dipole_x_D=0.0 dipole_y_D=0.0 dipole_z_D=0.0 dipole_mag_D=0.0 dipole_x_eA=0.0 dipole_y_eA=0.0 dipole_z_eA=0.0 status_dipole=OK status_quadrupole=MISSING total_charge_e=0 multiplicity=1 natoms=2 geom_sha1=5d3efe5554c6898f1aceb3d15a42c10b700c0b3a R_cog_x=0.0 R_cog_y=0.0 R_cog_z=0.37 R_com_x=0.0 R_com_y=0.0 R_com_z=0.37 R_cnc_x=0.0 R_cnc_y=0.0 R_cnc_z=0.37 status_eigs=OK spin_case=RKS homo_eV=-13.6057 lumo_eV=5.4423 gap_eV=19.048000000000002 n_orb_a=2 n_orb_b=0 argonne_rel=noble_gas_compounds/XeF7-_step4_-1_1/ data_id=orca.tar.zst dipole="0.0 0.0 0.0" pbc="F F F"
+H        0.00000000       0.00000000       0.00000000
+H        0.00000000       0.00000000       0.74000000
