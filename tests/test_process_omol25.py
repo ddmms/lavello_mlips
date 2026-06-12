@@ -373,7 +373,8 @@ def test_extxyz_props_consistency():
     # Load Parquet; index by geom_sha1
     df = pd.read_parquet(parquet_files[0])
     assert "geom_sha1" in df.columns, "geom_sha1 missing from Parquet"
-    parquet_by_sha = {row["geom_sha1"]: row for _, row in df.iterrows()}
+    records = df.to_dict('records')
+    parquet_by_sha = {row["geom_sha1"]: row for row in records}
 
     # Load atoms from the single merged XYZ file
     all_atoms = ase.io.read(str(xyz_files[0]), index=":")
@@ -492,7 +493,8 @@ def test_restart_5ranks_matches_serial():
 
     serial_df = pd.read_parquet(serial_parquet[0])
     serial_ats = ase.io.read(str(serial_xyz[0]), index=":")
-    serial_pq_by_sha = {r["geom_sha1"]: r for _, r in serial_df.iterrows()}
+    serial_records = serial_df.to_dict('records')
+    serial_pq_by_sha = {r["geom_sha1"]: r for r in serial_records}
     serial_xyz_by_sha = {at.info["geom_sha1"]: at for at in serial_ats}
 
     # ======================================================
@@ -537,7 +539,8 @@ def test_restart_5ranks_matches_serial():
 
     mpi_df = pd.read_parquet(mpi_parquet[0])
     mpi_ats = ase.io.read(str(mpi_xyz[0]), index=":")
-    mpi_pq_by_sha = {r["geom_sha1"]: r for _, r in mpi_df.iterrows()}
+    mpi_records = mpi_df.to_dict('records')
+    mpi_pq_by_sha = {r["geom_sha1"]: r for r in mpi_records}
     mpi_xyz_by_sha = {at.info["geom_sha1"]: at for at in mpi_ats}
 
     # ======================================================
