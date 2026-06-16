@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-06-16 - Replacing df.iterrows() with to_dict('records')
+**Learning:** Iterating over a Pandas DataFrame using `df.iterrows()` creates a new `Series` object for every row, making it a major bottleneck for large datasets (like Parquet properties mapping). Converting to a list of dicts via `df.to_dict('records')` before iteration avoids this overhead entirely.
+**Action:** Always replace `df.iterrows()` with `df.to_dict('records')` or `df.itertuples()` for row-by-row iteration over DataFrames. When refactoring, ensure any downstream methods assuming a pandas Series (like `.to_dict()`) are updated to handle native Python dicts.
