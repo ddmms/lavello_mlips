@@ -8,3 +8,7 @@
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2024-05-24 - Avoiding iterrows in Pandas DataFrames
+**Learning:** Iterating over large Pandas DataFrames using `df.iterrows()` creates significant bottlenecks by instantiating a new `Series` object for every row. Converting the DataFrame to a list of native Python dictionaries first via `df.to_dict('records')` avoids this overhead entirely.
+**Action:** Replace `df.iterrows()` loops with `df.to_dict('records')` iteration loops whenever scanning or indexing large DataFrames row by row, taking care to also update downstream row-handling logic since rows become native dicts instead of pandas Series.
