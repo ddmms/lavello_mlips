@@ -110,7 +110,7 @@ def test_lavello_mlips_mpi():
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    #assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    # assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
 
     expected_out = out_dir / "props_test_noble_gas.parquet"
     assert expected_out.exists()
@@ -156,7 +156,9 @@ def test_lavello_mlips_no_mpi():
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     expected_out = out_dir / "props_test_noble_gas_no_mpi.parquet"
     assert expected_out.exists()
@@ -200,7 +202,9 @@ def test_download_omol25():
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     # Check if a file was extracted.
     expected_file = Path("noble_gas_compounds/FXeNSO2F2_step20_0_1/orca.out")
@@ -270,7 +274,9 @@ def test_lavello_mlips_restart_mpi():
         "--mpi",
     ]
     result1 = subprocess.run(cmd1, capture_output=True, text=True)
-    assert result1.returncode == 0, f"MPI run 1 failed with {result1.returncode}:\nSTDOUT: {result1.stdout}\nSTDERR: {result1.stderr}"
+    assert result1.returncode == 0, (
+        f"MPI run 1 failed with {result1.returncode}:\nSTDOUT: {result1.stdout}\nSTDERR: {result1.stderr}"
+    )
 
     # Check restart file: at least some should be marked processed
     assert restart_file.exists()
@@ -298,7 +304,9 @@ def test_lavello_mlips_restart_mpi():
         "--mpi",
     ]
     result = subprocess.run(cmd2, capture_output=True, text=True)
-    assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     # Final check: all should be processed in the restart file
     with open(restart_file, "r") as f:
@@ -355,7 +363,9 @@ def test_extxyz_props_consistency():
         str(local_data_dir),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Serial run failed with {result.returncode}:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Serial run failed with {result.returncode}:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     # After merge there should be exactly ONE Parquet and ONE XYZ file (no rank-specific parts)
     parquet_files = list(out_dir.glob("props_*.parquet"))
@@ -373,7 +383,7 @@ def test_extxyz_props_consistency():
     # Load Parquet; index by geom_sha1
     df = pd.read_parquet(parquet_files[0])
     assert "geom_sha1" in df.columns, "geom_sha1 missing from Parquet"
-    parquet_by_sha = {row["geom_sha1"]: row for _, row in df.iterrows()}
+    parquet_by_sha = {row["geom_sha1"]: row for row in df.to_dict("records")}
 
     # Load atoms from the single merged XYZ file
     all_atoms = ase.io.read(str(xyz_files[0]), index=":")
@@ -483,7 +493,9 @@ def test_restart_5ranks_matches_serial():
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, f"Serial run failed with {result.returncode}:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Serial run failed with {result.returncode}:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     serial_parquet = list(serial_dir.glob("props_*.parquet"))
     serial_xyz = list(serial_dir.glob("structs_*.xyz"))
@@ -492,7 +504,7 @@ def test_restart_5ranks_matches_serial():
 
     serial_df = pd.read_parquet(serial_parquet[0])
     serial_ats = ase.io.read(str(serial_xyz[0]), index=":")
-    serial_pq_by_sha = {r["geom_sha1"]: r for _, r in serial_df.iterrows()}
+    serial_pq_by_sha = {r["geom_sha1"]: r for r in serial_df.to_dict("records")}
     serial_xyz_by_sha = {at.info["geom_sha1"]: at for at in serial_ats}
 
     # ======================================================
@@ -519,7 +531,9 @@ def test_restart_5ranks_matches_serial():
         capture_output=True,
         text=True,
     )
-    assert r1.returncode == 0, f"MPI phase-1 failed with {r1.returncode}:\nSTDOUT: {r1.stdout}\nSTDERR: {r1.stderr}"
+    assert r1.returncode == 0, (
+        f"MPI phase-1 failed with {r1.returncode}:\nSTDOUT: {r1.stdout}\nSTDERR: {r1.stderr}"
+    )
     assert restart_file.exists(), "Restart file not created after phase 1"
 
     # Phase 2: continue from restart file (picks up remaining items)
@@ -528,7 +542,9 @@ def test_restart_5ranks_matches_serial():
         capture_output=True,
         text=True,
     )
-    assert r2.returncode == 0, f"MPI phase-2 failed with {r2.returncode}:\nSTDOUT: {r2.stdout}\nSTDERR: {r2.stderr}"
+    assert r2.returncode == 0, (
+        f"MPI phase-2 failed with {r2.returncode}:\nSTDOUT: {r2.stdout}\nSTDERR: {r2.stderr}"
+    )
 
     mpi_parquet = list(mpi_dir.glob("props_*.parquet"))
     mpi_xyz = list(mpi_dir.glob("structs_*.xyz"))
@@ -537,7 +553,7 @@ def test_restart_5ranks_matches_serial():
 
     mpi_df = pd.read_parquet(mpi_parquet[0])
     mpi_ats = ase.io.read(str(mpi_xyz[0]), index=":")
-    mpi_pq_by_sha = {r["geom_sha1"]: r for _, r in mpi_df.iterrows()}
+    mpi_pq_by_sha = {r["geom_sha1"]: r for r in mpi_df.to_dict("records")}
     mpi_xyz_by_sha = {at.info["geom_sha1"]: at for at in mpi_ats}
 
     # ======================================================
@@ -624,7 +640,9 @@ def test_download_omol25_mpi():
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, (
+        f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    )
 
     # Check if a file was extracted.
     expected_file = Path("noble_gas_compounds/FXeNSO2F2_step20_0_1/orca.out")
