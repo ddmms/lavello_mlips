@@ -5,6 +5,11 @@
 ## 2024-05-18 - Replacing `json` with `orjson` for large datasets
 **Learning:** In pipelines handling large datasets via dictionaries containing metadata (e.g. millions of prefixes), `json.dump` and `json.load` can become significant bottlenecks, adding seconds or even minutes to startup and checkpointing phases. `orjson` provides a near drop-in replacement that is 4-10x faster for such operations.
 **Action:** When working with large JSON files, especially in a framework requiring frequent disk checkpoints, replace Python's built-in `json` module with `orjson` wrapping `loads`/`dumps` to preserve API compatibility while gaining massive performance boosts.
+
 ## 2024-03-29 - ASE Custom JSON encoding vs standard JSON
 **Learning:** ASE's custom JSON encoder (`ase.io.jsonio.encode`) will generate dicts with special keys like `__ndarray__` or `__complex__` (e.g. `{"__ndarray__": [[5], "int64", ...]}`). When optimizing JSON deserialization using faster alternatives like `orjson`, it's critical to realize that a normal `json.loads` or `orjson.loads` will deserialize this into a Python dictionary, while ASE's custom `decode` will properly reconstruct the underlying numpy array. Bypassing ASE's decoder without checking for these keys leads to downstream type errors (e.g. `KeyError: '__ndarray__'`).
 **Action:** When replacing or wrapping ASE's jsonio with `orjson`, always fall back to ASE's `decode` if the payload string contains `__ndarray__` or `__complex__` markers, to ensure custom objects are correctly reconstructed.
+
+## 2025-01-20 - DataFrame Iteration in Large Datasets
+**Learning:** Iterating over large Pandas DataFrames using `df.iterrows()` creates a new `pd.Series` object for every row, resulting in substantial overhead and acting as a significant performance bottleneck in data validation loops (like in `verify_processed_omol25.py`). Converting the entire DataFrame to a list of dictionaries upfront using `df.to_dict('records')` avoids this object creation overhead and makes downstream row property lookups exponentially faster.
+**Action:** Never use `df.iterrows()` when processing or transforming entire DataFrames into row-level mappings. Always convert to a list of dicts first using `df.to_dict('records')`. Remember to update downstream code since rows will be native dictionaries instead of `pd.Series`.

@@ -1,0 +1,74 @@
+{
+    "noble_gas_compounds/FXeNSO2F2_step20_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/FXeNSO2F2_step21_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/FXeNSO2F2_step7_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/H4XeO4_step24_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/H4XeO6_step2_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/HCNKrF+_step25_1_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/HXeOH_step10_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/O2XeF4_step1_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/O2XeF4_step3_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/OXeF2_step5_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeC6F52_step10_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeC6F52_step4_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeC6F5CN_step9_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeC6F5F2+_step11_1_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeC6F5F2+_step26_1_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeCl4_step2_0_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeF7-_step2_-1_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    },
+    "noble_gas_compounds/XeF7-_step4_-1_1/": {
+        "processed": false,
+        "key": "orca.tar.zst"
+    }
+}
