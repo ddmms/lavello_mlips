@@ -30,6 +30,7 @@ D2EA = 0.20819434  # Debye → e·Å
 AU2B = 1.34503431  # a.u. → Buckingham
 AU2EAA = 0.2800285205359031  # a.u. → e·Å²
 B2EAA = 0.208194333  # Buckingham → e·Å²
+BOHR2A = 0.529177210903  # bohr → Å
 
 MiB = 1024**2
 GiB = 1024 * MiB
@@ -82,7 +83,8 @@ def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
     for m in RE_DIP.finditer(txt):
         unit = (m.group(1) or "").lower()
         x, y, z = map(float, m.group(2, 3, 4))
-        if unit == "a.u.":
+        # ORCA prints the unlabelled "Total Dipole Moment" components in a.u.
+        if unit in ("", "a.u."):
             x, y, z = x * AU2D, y * AU2D, z * AU2D
         best = (x, y, z)
         if unit == "debye":
@@ -92,6 +94,46 @@ def parse_dipole(txt: str) -> Optional[Tuple[float, float, float, float]]:
     Dx, Dy, Dz = best
     Mag = (Dx * Dx + Dy * Dy + Dz * Dz) ** 0.5
     return Dx, Dy, Dz, Mag
+
+
+# ---------- electric origin ----------
+RE_ORIGIN = re.compile(
+    r"Position\s+of\s+electric\s+origin\s*\.\.\.\s*\(?\s*"
+    r"([+-]?\d+(?:\.\d+)?)\s*,?\s*([+-]?\d+(?:\.\d+)?)\s*,?\s*([+-]?\d+(?:\.\d+)?)",
+    re.I,
+)
+
+# ORCA quadrupole component order: XX, YY, ZZ, XY, XZ, YZ
+QUAD_ROWS = np.array([0, 1, 2, 0, 0, 1])
+QUAD_COLS = np.array([0, 1, 2, 1, 2, 2])
+
+
+def parse_electric_origin(txt: str) -> Optional[np.ndarray]:
+    """Origin of ORCA's electric multipoles in Å (ORCA prints it in bohr)."""
+    matches = RE_ORIGIN.findall(txt or "")
+    if not matches:
+        return None
+    return np.array(matches[-1], dtype=float) * BOHR2A
+
+
+def shift_multipoles_to_coordinate_origin(
+    mu: np.ndarray, quad6: Optional[np.ndarray], charge: float, origin: np.ndarray
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Move a dipole (3,) and raw Cartesian quadrupole (6,) from `origin` to (0, 0, 0).
+
+    Inputs must share one unit system (e.g. e·Å, e·Å², Å). With R = origin:
+    mu0 = mu + q R,  Q0 = Q + R mu^T + mu R^T + q R R^T.
+    """
+    R = np.asarray(origin, dtype=float)
+    mu = np.asarray(mu, dtype=float)
+    mu0 = mu + charge * R
+    if quad6 is None:
+        return mu0, None
+    theta = np.zeros((3, 3))
+    theta[QUAD_ROWS, QUAD_COLS] = quad6
+    theta[QUAD_COLS, QUAD_ROWS] = quad6
+    theta0 = theta + np.outer(R, mu) + np.outer(mu, R) + charge * np.outer(R, R)
+    return mu0, theta0[QUAD_ROWS, QUAD_COLS]
 
 
 # ---------- charge/multiplicity ----------
@@ -440,9 +482,53 @@ class OmolDataProcessor(S3DataProcessor):
                 txt_prop = tar.extractfile(prop).read().decode("utf-8")
                 txt_inp = tar.extractfile(inp).read().decode("utf-8")
 
+            Q, M = parse_charge_mult((txt_out or "") + "\n" + (txt_inp or ""))
+            rec["total_charge_e"] = Q
+            rec["multiplicity"] = M
+
             dip = parse_dipole(((txt_prop or "") + "\n" + (txt_out or "")))
+            quad = parse_quadrupole(txt_out or "")
+            origin = parse_electric_origin(txt_out or "")
             if dip:
-                Dx, Dy, Dz, Mag = dip
+                rec.update(
+                    {
+                        "dipole_x_D_orca": dip[0],
+                        "dipole_y_D_orca": dip[1],
+                        "dipole_z_D_orca": dip[2],
+                        "dipole_mag_D_orca": dip[3],
+                    }
+                )
+            if quad:
+                rec.update(
+                    {
+                        "Q_xx_B_orca": quad[0],
+                        "Q_yy_B_orca": quad[1],
+                        "Q_zz_B_orca": quad[2],
+                        "Q_xy_B_orca": quad[3],
+                        "Q_xz_B_orca": quad[4],
+                        "Q_yz_B_orca": quad[5],
+                        "Q_isotropic_B_orca": quad[6],
+                    }
+                )
+            mu_eA = quad_eAA = None
+            if dip and origin is not None and Q is not None:
+                rec.update(
+                    {
+                        "R_orca_origin_x": float(origin[0]),
+                        "R_orca_origin_y": float(origin[1]),
+                        "R_orca_origin_z": float(origin[2]),
+                    }
+                )
+                mu_eA, quad_eAA = shift_multipoles_to_coordinate_origin(
+                    np.array(dip[:3]) * D2EA,
+                    np.array(quad[:6]) * B2EAA if quad else None,
+                    Q,
+                    origin,
+                )
+
+            if mu_eA is not None:
+                Dx, Dy, Dz = (mu_eA / D2EA).tolist()
+                Mag = (Dx * Dx + Dy * Dy + Dz * Dz) ** 0.5
                 rec.update(
                     {
                         "dipole_x_D": Dx,
@@ -456,11 +542,11 @@ class OmolDataProcessor(S3DataProcessor):
                     }
                 )
             else:
-                rec["status_dipole"] = "MISSING"
+                rec["status_dipole"] = "MISSING" if not dip else "NO_ORIGIN"
 
-            quad = parse_quadrupole(txt_out or "")
-            if quad:
-                xx, yy, zz, xy, xz, yz, q = quad
+            if quad_eAA is not None:
+                xx, yy, zz, xy, xz, yz = (quad_eAA / B2EAA).tolist()
+                q = (xx + yy + zz) / 3.0
                 rec.update(
                     {
                         "Q_xx_B": xx,
@@ -481,13 +567,12 @@ class OmolDataProcessor(S3DataProcessor):
                     }
                 )
             else:
-                rec["status_quadrupole"] = "MISSING"
-
-            Q, M = parse_charge_mult((txt_out or "") + "\n" + (txt_inp or ""))
-            rec["total_charge_e"] = Q
-            rec["multiplicity"] = M
+                rec["status_quadrupole"] = "MISSING" if not quad else "NO_ORIGIN"
 
             atoms = read(StringIO(txt_out), format="orca-output")
+            # ASE only shifts ORCA's dipole to (0, 0, 0) for pre-6 output; drop it to avoid ambiguity
+            if atoms.calc is not None:
+                atoms.calc.results.pop("dipole", None)
             rec["natoms"] = len(atoms)
             coords = atoms.positions.tolist()
             elems = list(atoms.symbols)
