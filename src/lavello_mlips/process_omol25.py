@@ -656,40 +656,6 @@ def build_orca_record(
     return rec, atoms
 
 
-def process_local_orca_dirs(root, output_dir) -> None:
-    """Write Parquet and ExtXYZ for unpacked ORCA directories under ``root``."""
-    root = Path(root)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    folders = sorted(
-        path for path in root.iterdir() if path.is_dir() and (path / "orca.out").is_file()
-    )
-    recs: List[Dict[str, Any]] = []
-    all_atoms: List[Any] = []
-    for folder in folders:
-        logger.info("processing %s", folder.name)
-        gbw_bytes = extract_gbw_from_path(folder / "orca.gbw")
-        density_path = folder / "density_mat.npz"
-        prop_path = folder / "orca.property.txt"
-        try:
-            rec, atoms = build_orca_record(
-                (folder / "orca.out").read_text(errors="replace"),
-                prop_path.read_text(errors="replace") if prop_path.is_file() else "",
-                (folder / "orca.inp").read_text(errors="replace"),
-                gbw_bytes,
-                density_path.read_bytes() if density_path.is_file() else None,
-            )
-        except Exception as exc:
-            logger.error("failed %s: %s", folder.name, exc)
-            continue
-        rec["data_id"] = folder.name
-        atoms.info["data_id"] = folder.name
-        recs.append(rec)
-        all_atoms.append(atoms)
-    pd.DataFrame(recs).to_parquet(output_dir / "props_ani1xbb.parquet", index=False)
-    write(str(output_dir / "structs_ani1xbb.xyz"), all_atoms, format="extxyz")
-
-
 class OmolDataProcessor(S3DataProcessor):
     """
     Derived processor for Omol data, handling MPI orchestration and Orca parsing.
@@ -1208,5 +1174,3 @@ class OmolDataProcessor(S3DataProcessor):
             self._final_merge(time.time() - start_time)
         finally:
             pass
-
-logger = logging.getLogger(__name__)

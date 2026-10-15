@@ -91,7 +91,7 @@ def extract_gbw_bytes(raw_bytes: bytes) -> bytes:
 def extract_gbw_from_path(gbw_path: Path) -> Optional[bytes]:
     """
     Read orca.gbw from path, checking for orca.gbw or orca.gbw.zstd0 in the parent directory.
-    If orca.gbw.zstd0 exists, extracts orca.gbw, writes it to disk, and returns its bytes.
+    If compressed archive exists, extracts orca.gbw strictly in memory and returns its bytes.
     """
     if gbw_path.is_file():
         return gbw_path.read_bytes()
@@ -103,10 +103,6 @@ def extract_gbw_from_path(gbw_path: Path) -> Optional[bytes]:
     ]
     for cand in zstd_candidates:
         if cand.is_file():
-            gbw_bytes = extract_gbw_bytes(cand.read_bytes())
-            try:
-                gbw_path.write_bytes(gbw_bytes)
-            except Exception:
-                pass
-            return gbw_bytes
+            return extract_gbw_bytes(cand.read_bytes())
     return None
+

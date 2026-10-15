@@ -206,8 +206,9 @@ def test_extract_gbw_from_path(tmp_path):
 
     res = extract_gbw_from_path(gbw_path)
     assert res == gbw_content
-    assert gbw_path.exists()
-    assert gbw_path.read_bytes() == gbw_content
+    # Decompression should be in memory and not extract/write to disk
+    assert not gbw_path.exists()
+
 
 
 def test_process_buffer_with_orca_gbw_zstd0():
@@ -237,4 +238,62 @@ def test_process_buffer_with_orca_gbw_zstd0():
     new_buf = io.BytesIO(c.compress(new_tar_buf.getvalue()))
     rec, _ = OmolDataProcessor._process_buffer(None, new_buf, "x")
     assert rec["status_dipole"] == "OK"
+
+
+def test_process_single_in_memory_no_disk_extraction(tmp_path):
+    import json
+    from unittest.mock import patch
+
+    c = ZstdCompressor()
+    calc_dir = tmp_path / "data" / "calc1"
+    calc_dir.mkdir(parents=True)
+
+    # Create orca.tar.zst
+    quad_au = np.array([-10.0, -11.0, -12.0, 0.5, 0.0, 0.0])
+    tar_zst_buf = make_orca_buffer(
+        np.array([0.1, 0.2, 0.3]), quad_au, np.zeros(3), 0, include_origin=True
+    )
+    (calc_dir / "orca.tar.zst").write_bytes(tar_zst_buf.getvalue())
+
+    # Create orca.gbw.zstd0
+    (calc_dir / "orca.gbw.zstd0").write_bytes(c.compress(b"DUMMY_GBW"))
+
+    prefix_json = tmp_path / "test_prefix.json"
+    with open(prefix_json, "w") as f:
+        json.dump(
+            {
+                "calc1/": {
+                    "key": ["orca.tar.zst", "orca.gbw.zstd0"],
+                    "processed": False,
+                }
+            },
+            f,
+        )
+
+    class MockArgs:
+        data_source = prefix_json
+        output_dir = tmp_path / "out"
+        bucket = "mock-bucket"
+        local_dir = tmp_path / "data"
+        login_file = None
+        sample_size = -1
+        batch_size = 10
+        start_index = 0
+        restart = False
+        memory_threshold_gb = 1.0
+
+    with patch(
+        "lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client",
+        return_value=None,
+    ):
+        processor = OmolDataProcessor(MockArgs(), rank=0, size=1, comm=None)
+        res = processor.process_single(0)
+        assert res is not None
+        rec, atoms, x = res
+        assert rec["status_dipole"] == "OK"
+        # Ensure no orca.gbw or temporary files were written to calc_dir!
+        files_in_calc = {p.name for p in calc_dir.iterdir()}
+        assert files_in_calc == {"orca.tar.zst", "orca.gbw.zstd0"}
+        assert not (calc_dir / "orca.gbw").exists()
+
 
