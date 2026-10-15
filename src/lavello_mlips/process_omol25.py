@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import signal
+import struct
 import time
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -12,10 +13,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from ase.io import read, write
-from mpi4py import MPI
+
+try:
+    from mpi4py import MPI
+except ImportError:  # local spin-multipole runs do not need MPI
+    MPI = None
 from tarfile import open as tar_open
 from tqdm import tqdm
-from zstandard import ZstdDecompressor
 
 import ase.parallel
 from ase.parallel import DummyMPI
@@ -136,6 +140,214 @@ def shift_multipoles_to_coordinate_origin(
     return mu0, theta0[QUAD_ROWS, QUAD_COLS]
 
 
+# ---------- spin dipole / spin quadrupole from ORCA GBW + density ----------
+# PySCF real-spherical index of each ORCA / Molden component.
+# p: pz, px, py; d and f follow the Molden order used by ORCA's GBW.
+PYSCF_OF_ORCA = {
+    0: (0,),
+    1: (2, 0, 1),
+    2: (2, 3, 1, 4, 0),
+    3: (3, 4, 2, 5, 1, 6, 0),
+    4: (4, 5, 3, 6, 2, 7, 1, 8, 0),
+}
+_GBW_SHELL_STRIDE = 608
+
+
+def parse_orca_basis(inp_text: str) -> str:
+    """Basis name PySCF can load, taken from the ORCA input."""
+    named = re.search(r'GTOName\s+"([^"]+)"', inp_text or "", re.I)
+    if named:
+        return Path(named.group(1)).stem.lower()
+    keyword = re.search(r"\b(def2-[A-Za-z0-9]+)\b", inp_text or "", re.I)
+    if keyword:
+        return keyword.group(1).lower()
+    raise RuntimeError("could not find the ORCA basis name")
+
+
+def _gbw_pointers(data: bytes) -> Tuple[int, int]:
+    geometry, basis = struct.unpack_from("<qq", data, 8)
+    return geometry, basis
+
+
+def _gbw_geometry(data: bytes, offset: int) -> List[Tuple[int, np.ndarray]]:
+    natom = struct.unpack_from("<i", data, offset)[0]
+    pos = offset + 4
+    atoms = []
+    for _ in range(natom):
+        xyz = np.array(struct.unpack_from("<3d", data, pos), dtype=np.float64)
+        atomic_number = struct.unpack_from("<i", data, pos + 48)[0]
+        atoms.append((atomic_number, xyz))
+        pos += 68
+    return atoms
+
+
+def _gbw_shells(data: bytes, basis_offset: int, natom: int):
+    """AO shells in ORCA's storage order, as (atom index, exponents)."""
+    pos = basis_offset + 24
+    shells = []
+    atom = 0
+    while atom < natom and pos + _GBW_SHELL_STRIDE <= len(data):
+        nprim = struct.unpack_from("<i", data, pos)[0]
+        if nprim == 0:
+            pos += 8
+            atom += 1
+            continue
+        if not 1 <= nprim <= 40:
+            break
+        exponents = np.array(
+            [struct.unpack_from("<d", data, pos + 8 + 8 * k)[0] for k in range(nprim)],
+            dtype=np.float64,
+        )
+        shells.append((atom, exponents))
+        pos += _GBW_SHELL_STRIDE
+    return shells
+
+
+def _orca_ao_permutation(mol, shells) -> np.ndarray:
+    pyscf_shells = []
+    ao = 0
+    for ib in range(mol.nbas):
+        angular = mol.bas_angular(ib)
+        nfn = 2 * angular + 1
+        pyscf_shells.append((ib, mol.bas_atom(ib), angular, np.array(mol.bas_exp(ib)), ao, nfn))
+        ao += nfn
+    used = set()
+    mapping = []
+    for atom, exponents in shells:
+        match = None
+        for shell in pyscf_shells:
+            if shell[0] in used or shell[1] != atom:
+                continue
+            if shell[3].size == exponents.size and np.allclose(
+                shell[3], exponents, rtol=1e-8, atol=0.0
+            ):
+                match = shell
+                break
+        if match is None:
+            continue
+        used.add(match[0])
+        angular, ao0, nfn = match[2], match[4], match[5]
+        order = PYSCF_OF_ORCA.get(angular)
+        if order is None or len(order) != nfn:
+            raise RuntimeError(f"no ORCA spherical order for l={angular}")
+        mapping.extend(ao0 + component for component in order)
+    if len(mapping) != mol.nao_nr() or len(set(mapping)) != mol.nao_nr():
+        raise RuntimeError(
+            f"AO map covers {len(set(mapping))} of {mol.nao_nr()} functions"
+        )
+    return np.asarray(mapping, dtype=int)
+
+
+def _unpack_triangular(values: np.ndarray, nao: int) -> np.ndarray:
+    if values.size != nao * (nao + 1) // 2:
+        raise RuntimeError(
+            f"packed density length {values.size} is not {nao}*({nao}+1)/2"
+        )
+    matrix = np.zeros((nao, nao), dtype=np.float64)
+    pointer = 0
+    for row in range(nao):
+        for col in range(row, nao):
+            matrix[row, col] = matrix[col, row] = values[pointer]
+            pointer += 1
+    return matrix
+
+
+def spin_multipoles_from_orca(
+    gbw: bytes, density_npz: bytes, basis: str, charge: int
+) -> Dict[str, Any]:
+    """Spin dipole and traceless spin quadrupole at the coordinate origin.
+
+    The origin is the laboratory frame of the GBW geometry, (0, 0, 0), not
+    the centre of mass. ``spin_dipole_eA`` is in e·Å and
+    ``spin_quadrupole_traceless`` is the traceless Cartesian tensor in e·Å²,
+    raw second moment minus one third of its trace.
+    """
+    from pyscf import gto
+    from pyscf.data.elements import ELEMENTS
+    from pyscf.gto.basis import load_ecp
+
+    geometry_offset, basis_offset = _gbw_pointers(gbw)
+    atoms = _gbw_geometry(gbw, geometry_offset)
+    shells = _gbw_shells(gbw, basis_offset, len(atoms))
+    nuclear_charge = float(sum(atomic_number for atomic_number, _ in atoms))
+    n_elec = int(round(nuclear_charge - charge))
+    ecp = {}
+    for atomic_number, _ in atoms:
+        symbol = ELEMENTS[atomic_number]
+        if symbol in ecp:
+            continue
+        try:
+            load_ecp(basis, symbol)
+        except Exception:
+            continue
+        ecp[symbol] = basis
+    molecule = gto.M(
+        atom=[(ELEMENTS[atomic_number], xyz) for atomic_number, xyz in atoms],
+        basis=basis,
+        ecp=ecp or None,
+        unit="Bohr",
+        charge=int(charge),
+        spin=n_elec % 2,
+        cart=False,
+        verbose=0,
+    )
+    permutation = _orca_ao_permutation(molecule, shells)
+    nao = molecule.nao_nr()
+    overlap = molecule.intor("int1e_ovlp")[np.ix_(permutation, permutation)]
+    dipole = molecule.intor("int1e_r")[:, permutation][:, :, permutation]
+    quadrupole = molecule.intor("int1e_rr").reshape(3, 3, nao, nao)
+    quadrupole = quadrupole[:, :, permutation][:, :, :, permutation]
+
+    with np.load(BytesIO(density_npz)) as packed:
+        total = _unpack_triangular(np.asarray(packed["orca.scfp"]), nao)
+        if "orca.scfr" in packed.files:
+            spin = _unpack_triangular(np.asarray(packed["orca.scfr"]), nao)
+        else:
+            spin = np.zeros_like(total)
+
+    n_total = float(np.einsum("ij,ji->", total, overlap))
+    # def2 replaces some cores by an ECP, so the density integrates to the
+    # valence count. A few hundredths of an electron remain from the ORCA/PySCF
+    # contraction difference.
+    expected = float(molecule.nelectron)
+    if abs(n_total - expected) > 0.25:
+        raise RuntimeError(
+            f"density integrates to {n_total:.4f} electrons, expected {expected:.0f}"
+        )
+    n_spin = float(np.einsum("ij,ji->", spin, overlap))
+    mu_au = np.einsum("ij,aij->a", spin, dipole)
+    raw_au = np.einsum("ij,abij->ab", spin, quadrupole)
+    traceless_au = raw_au - np.eye(3) * (np.trace(raw_au) / 3.0)
+    mu = mu_au * BOHR2A
+    quad = traceless_au * (BOHR2A ** 2)
+    return {
+        "spin_dipole_eA": [float(x) for x in mu],
+        "spin_quadrupole_traceless": [[float(x) for x in row] for row in quad],
+        "spin_electrons": n_spin,
+        "status_spin_multipole": "OK",
+        "spin_multipole_origin": "coordinate_origin",
+    }
+
+
+def _attach_spin_multipoles(
+    rec: Dict[str, Any], inp_text: str, gbw: Optional[bytes], density_npz: Optional[bytes]
+) -> None:
+    if not gbw or not density_npz:
+        rec["status_spin_multipole"] = "MISSING"
+        return
+    charge = rec.get("total_charge_e")
+    if charge is None:
+        rec["status_spin_multipole"] = "NO_CHARGE"
+        return
+    try:
+        rec.update(
+            spin_multipoles_from_orca(gbw, density_npz, parse_orca_basis(inp_text), int(charge))
+        )
+    except Exception as exc:
+        logger.error("Spin multipole failed: %s", exc)
+        rec["status_spin_multipole"] = "ERROR"
+
+
 # ---------- charge/multiplicity ----------
 RE_CHARGE_MULT = re.compile(
     r"(?:Total\s+Charge|Overall\s+charge\s+of\s+the\s+system)\s*[:=]\s*(-?\d+)|"
@@ -229,10 +441,12 @@ def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
                 + " "
                 + (lines[i - 2].upper() if i >= 2 else "")
             )
-            if "ALPHA" in back:
-                tag = "A"
-            if "BETA" in back:
+            # ORCA labels unrestricted blocks "SPIN UP" / "SPIN DOWN".
+            # "SPIN DOWN" must be tested first; it does not contain "SPIN UP".
+            if "SPIN DOWN" in back or "BETA" in back:
                 tag = "B"
+            elif "SPIN UP" in back or "ALPHA" in back:
+                tag = "A"
             i += 1
             rows = []
             while i < len(lines):
@@ -271,20 +485,14 @@ def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
         hb, lb = homo_lumo(b_eV, b_occ)
         res.update(
             {
-                "homo_a_eV": ha,
-                "lumo_a_eV": la,
-                "gap_a_eV": (None if ha is None or la is None else la - ha),
-                "homo_b_eV": hb,
-                "lumo_b_eV": lb,
-                "gap_b_eV": (None if hb is None or lb is None else lb - hb),
-                "homo_eV": max([x for x in [ha, hb] if x is not None], default=None),
-                "lumo_eV": min([x for x in [la, lb] if x is not None], default=None),
+                "alpha_homo_eV": ha,
+                "alpha_lumo_eV": la,
+                "beta_homo_eV": hb,
+                "beta_lumo_eV": lb,
                 "n_orb_a": len(a_eV),
                 "n_orb_b": len(b_eV),
             }
         )
-        if res["homo_eV"] is not None and res["lumo_eV"] is not None:
-            res["gap_eV"] = res["lumo_eV"] - res["homo_eV"]
     elif R:
         r_occ, r_eV = zip(*R) if R else ([], [])
         r_occ, r_eV = list(r_occ), list(r_eV)
@@ -292,14 +500,194 @@ def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
         res.update(
             {
                 "spin_case": "RKS",
-                "homo_eV": ha,
-                "lumo_eV": la,
-                "gap_eV": (None if ha is None or la is None else la - ha),
+                "alpha_homo_eV": ha,
+                "alpha_lumo_eV": la,
+                "beta_homo_eV": ha,
+                "beta_lumo_eV": la,
                 "n_orb_a": len(r_eV),
                 "n_orb_b": 0,
             }
         )
     return res
+
+
+def build_orca_record(
+    txt_out: str,
+    txt_prop: str,
+    txt_inp: str,
+    gbw: Optional[bytes],
+    density: Optional[bytes],
+) -> Tuple[Dict[str, Any], Any]:
+    """Parse one ORCA calculation, including spin multipoles when a GBW and density exist."""
+    rec: Dict[str, Any] = {}
+    Q, M = parse_charge_mult((txt_out or "") + "\n" + (txt_inp or ""))
+    rec["total_charge_e"] = Q
+    rec["multiplicity"] = M
+
+    dip = parse_dipole(((txt_prop or "") + "\n" + (txt_out or "")))
+    quad = parse_quadrupole(txt_out or "")
+    origin = parse_electric_origin(txt_out or "")
+    if dip:
+        rec.update(
+            {
+                "dipole_x_D_orca": dip[0],
+                "dipole_y_D_orca": dip[1],
+                "dipole_z_D_orca": dip[2],
+                "dipole_mag_D_orca": dip[3],
+            }
+        )
+    if quad:
+        rec.update(
+            {
+                "Q_xx_B_orca": quad[0],
+                "Q_yy_B_orca": quad[1],
+                "Q_zz_B_orca": quad[2],
+                "Q_xy_B_orca": quad[3],
+                "Q_xz_B_orca": quad[4],
+                "Q_yz_B_orca": quad[5],
+                "Q_isotropic_B_orca": quad[6],
+            }
+        )
+    mu_eA = quad_eAA = None
+    if dip and origin is not None and Q is not None:
+        rec.update(
+            {
+                "R_orca_origin_x": float(origin[0]),
+                "R_orca_origin_y": float(origin[1]),
+                "R_orca_origin_z": float(origin[2]),
+            }
+        )
+        mu_eA, quad_eAA = shift_multipoles_to_coordinate_origin(
+            np.array(dip[:3]) * D2EA,
+            np.array(quad[:6]) * B2EAA if quad else None,
+            Q,
+            origin,
+        )
+
+    if mu_eA is not None:
+        Dx, Dy, Dz = (mu_eA / D2EA).tolist()
+        Mag = (Dx * Dx + Dy * Dy + Dz * Dz) ** 0.5
+        rec.update(
+            {
+                "dipole_x_D": Dx,
+                "dipole_y_D": Dy,
+                "dipole_z_D": Dz,
+                "dipole_mag_D": Mag,
+                "dipole_x_eA": Dx * D2EA,
+                "dipole_y_eA": Dy * D2EA,
+                "dipole_z_eA": Dz * D2EA,
+                "status_dipole": "OK",
+            }
+        )
+    else:
+        rec["status_dipole"] = "MISSING" if not dip else "NO_ORIGIN"
+
+    if quad_eAA is not None:
+        xx, yy, zz, xy, xz, yz = (quad_eAA / B2EAA).tolist()
+        q = (xx + yy + zz) / 3.0
+        rec.update(
+            {
+                "Q_xx_B": xx,
+                "Q_yy_B": yy,
+                "Q_zz_B": zz,
+                "Q_xy_B": xy,
+                "Q_xz_B": xz,
+                "Q_yz_B": yz,
+                "Q_isotropic_B": q,
+                "Q_xx_eAA": xx * B2EAA,
+                "Q_yy_eAA": yy * B2EAA,
+                "Q_zz_eAA": zz * B2EAA,
+                "Q_xy_eAA": xy * B2EAA,
+                "Q_xz_eAA": xz * B2EAA,
+                "Q_yz_eAA": yz * B2EAA,
+                "Q_isotropic_eAA": q * B2EAA,
+                "status_quadrupole": "OK",
+            }
+        )
+        raw = np.zeros((3, 3))
+        raw[QUAD_ROWS, QUAD_COLS] = quad_eAA
+        raw[QUAD_COLS, QUAD_ROWS] = quad_eAA
+        traceless = raw - np.eye(3) * (np.trace(raw) / 3.0)
+        rec["quadrupole_eA_traceless"] = traceless.tolist()
+    else:
+        rec["status_quadrupole"] = "MISSING" if not quad else "NO_ORIGIN"
+
+    atoms = read(StringIO(txt_out), format="orca-output")
+    # ASE only shifts ORCA's dipole to (0, 0, 0) for pre-6 output; drop it to avoid ambiguity
+    if atoms.calc is not None:
+        atoms.calc.results.pop("dipole", None)
+    rec["natoms"] = len(atoms)
+    coords = atoms.positions.tolist()
+    elems = list(atoms.symbols)
+    Zs = list(atoms.numbers)
+    rec["geom_sha1"] = geom_sha1(elems, coords)
+    R_cog = cog(coords)
+    R_com = atoms.get_center_of_mass().tolist()
+    R_cnc = cnc(Zs, coords)
+    rec.update({"R_cog_x": R_cog[0], "R_cog_y": R_cog[1], "R_cog_z": R_cog[2]})
+    rec.update({"R_com_x": R_com[0], "R_com_y": R_com[1], "R_com_z": R_com[2]})
+    rec.update({"R_cnc_x": R_cnc[0], "R_cnc_y": R_cnc[1], "R_cnc_z": R_cnc[2]})
+
+    eig = parse_eigens(txt_out or "")
+    if eig:
+        rec["status_eigs"] = "OK"
+        for k in [
+            "spin_case",
+            "alpha_homo_eV",
+            "alpha_lumo_eV",
+            "beta_homo_eV",
+            "beta_lumo_eV",
+            "n_orb_a",
+            "n_orb_b",
+        ]:
+            if k in eig:
+                rec[k] = eig[k]
+    else:
+        rec["status_eigs"] = "MISSING"
+
+    _attach_spin_multipoles(rec, txt_inp or "", gbw, density)
+
+    for k, v in rec.items():
+        if v is not None:
+            atoms.info[k] = v
+    for key in ("spin_dipole_eA", "spin_quadrupole_traceless", "quadrupole_eA_traceless"):
+        if rec.get(key) is not None:
+            atoms.info[key] = np.asarray(rec[key], dtype=float)
+    return rec, atoms
+
+
+def process_local_orca_dirs(root, output_dir) -> None:
+    """Write Parquet and ExtXYZ for unpacked ORCA directories under ``root``."""
+    root = Path(root)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    folders = sorted(
+        path for path in root.iterdir() if path.is_dir() and (path / "orca.out").is_file()
+    )
+    recs: List[Dict[str, Any]] = []
+    all_atoms: List[Any] = []
+    for folder in folders:
+        logger.info("processing %s", folder.name)
+        gbw_path = folder / "orca.gbw"
+        density_path = folder / "density_mat.npz"
+        prop_path = folder / "orca.property.txt"
+        try:
+            rec, atoms = build_orca_record(
+                (folder / "orca.out").read_text(errors="replace"),
+                prop_path.read_text(errors="replace") if prop_path.is_file() else "",
+                (folder / "orca.inp").read_text(errors="replace"),
+                gbw_path.read_bytes() if gbw_path.is_file() else None,
+                density_path.read_bytes() if density_path.is_file() else None,
+            )
+        except Exception as exc:
+            logger.error("failed %s: %s", folder.name, exc)
+            continue
+        rec["data_id"] = folder.name
+        atoms.info["data_id"] = folder.name
+        recs.append(rec)
+        all_atoms.append(atoms)
+    pd.DataFrame(recs).to_parquet(output_dir / "props_ani1xbb.parquet", index=False)
+    write(str(output_dir / "structs_ani1xbb.xyz"), all_atoms, format="extxyz")
 
 
 class OmolDataProcessor(S3DataProcessor):
@@ -466,153 +854,27 @@ class OmolDataProcessor(S3DataProcessor):
 
     def _process_buffer(self, buffer: BytesIO, x: str) -> Optional[Tuple[Dict[str, Any], Any]]:
         """Parse a .tar.zst buffer; returns (rec dict, ASE Atoms) or None."""
-        rec: Dict[str, Any] = {}
         try:
+            from zstandard import ZstdDecompressor
+
             decompressor = ZstdDecompressor()
             decompressed_buffer = BytesIO()
             decompressor.copy_stream(buffer, decompressed_buffer)
             decompressed_buffer.seek(0)
 
             with tar_open(fileobj=decompressed_buffer, mode="r") as tar:
-                out = tar.getmember("orca.out")
-                inp = tar.getmember("orca.inp")
-                prop = tar.getmember("orca.property.txt")
-
-                txt_out = tar.extractfile(out).read().decode("utf-8")
-                txt_prop = tar.extractfile(prop).read().decode("utf-8")
-                txt_inp = tar.extractfile(inp).read().decode("utf-8")
-
-            Q, M = parse_charge_mult((txt_out or "") + "\n" + (txt_inp or ""))
-            rec["total_charge_e"] = Q
-            rec["multiplicity"] = M
-
-            dip = parse_dipole(((txt_prop or "") + "\n" + (txt_out or "")))
-            quad = parse_quadrupole(txt_out or "")
-            origin = parse_electric_origin(txt_out or "")
-            if dip:
-                rec.update(
-                    {
-                        "dipole_x_D_orca": dip[0],
-                        "dipole_y_D_orca": dip[1],
-                        "dipole_z_D_orca": dip[2],
-                        "dipole_mag_D_orca": dip[3],
-                    }
-                )
-            if quad:
-                rec.update(
-                    {
-                        "Q_xx_B_orca": quad[0],
-                        "Q_yy_B_orca": quad[1],
-                        "Q_zz_B_orca": quad[2],
-                        "Q_xy_B_orca": quad[3],
-                        "Q_xz_B_orca": quad[4],
-                        "Q_yz_B_orca": quad[5],
-                        "Q_isotropic_B_orca": quad[6],
-                    }
-                )
-            mu_eA = quad_eAA = None
-            if dip and origin is not None and Q is not None:
-                rec.update(
-                    {
-                        "R_orca_origin_x": float(origin[0]),
-                        "R_orca_origin_y": float(origin[1]),
-                        "R_orca_origin_z": float(origin[2]),
-                    }
-                )
-                mu_eA, quad_eAA = shift_multipoles_to_coordinate_origin(
-                    np.array(dip[:3]) * D2EA,
-                    np.array(quad[:6]) * B2EAA if quad else None,
-                    Q,
-                    origin,
+                names = set(tar.getnames())
+                txt_out = tar.extractfile("orca.out").read().decode("utf-8")
+                txt_prop = tar.extractfile("orca.property.txt").read().decode("utf-8")
+                txt_inp = tar.extractfile("orca.inp").read().decode("utf-8")
+                gbw = tar.extractfile("orca.gbw").read() if "orca.gbw" in names else None
+                density = (
+                    tar.extractfile("density_mat.npz").read()
+                    if "density_mat.npz" in names
+                    else None
                 )
 
-            if mu_eA is not None:
-                Dx, Dy, Dz = (mu_eA / D2EA).tolist()
-                Mag = (Dx * Dx + Dy * Dy + Dz * Dz) ** 0.5
-                rec.update(
-                    {
-                        "dipole_x_D": Dx,
-                        "dipole_y_D": Dy,
-                        "dipole_z_D": Dz,
-                        "dipole_mag_D": Mag,
-                        "dipole_x_eA": Dx * D2EA,
-                        "dipole_y_eA": Dy * D2EA,
-                        "dipole_z_eA": Dz * D2EA,
-                        "status_dipole": "OK",
-                    }
-                )
-            else:
-                rec["status_dipole"] = "MISSING" if not dip else "NO_ORIGIN"
-
-            if quad_eAA is not None:
-                xx, yy, zz, xy, xz, yz = (quad_eAA / B2EAA).tolist()
-                q = (xx + yy + zz) / 3.0
-                rec.update(
-                    {
-                        "Q_xx_B": xx,
-                        "Q_yy_B": yy,
-                        "Q_zz_B": zz,
-                        "Q_xy_B": xy,
-                        "Q_xz_B": xz,
-                        "Q_yz_B": yz,
-                        "Q_isotropic_B": q,
-                        "Q_xx_eAA": xx * B2EAA,
-                        "Q_yy_eAA": yy * B2EAA,
-                        "Q_zz_eAA": zz * B2EAA,
-                        "Q_xy_eAA": xy * B2EAA,
-                        "Q_xz_eAA": xz * B2EAA,
-                        "Q_yz_eAA": yz * B2EAA,
-                        "Q_isotropic_eAA": q * B2EAA,
-                        "status_quadrupole": "OK",
-                    }
-                )
-            else:
-                rec["status_quadrupole"] = "MISSING" if not quad else "NO_ORIGIN"
-
-            atoms = read(StringIO(txt_out), format="orca-output")
-            # ASE only shifts ORCA's dipole to (0, 0, 0) for pre-6 output; drop it to avoid ambiguity
-            if atoms.calc is not None:
-                atoms.calc.results.pop("dipole", None)
-            rec["natoms"] = len(atoms)
-            coords = atoms.positions.tolist()
-            elems = list(atoms.symbols)
-            Zs = list(atoms.numbers)
-            rec["geom_sha1"] = geom_sha1(elems, coords)
-            R_cog = cog(coords)
-            R_com = atoms.get_center_of_mass().tolist()
-            R_cnc = cnc(Zs, coords)
-            rec.update({"R_cog_x": R_cog[0], "R_cog_y": R_cog[1], "R_cog_z": R_cog[2]})
-            rec.update({"R_com_x": R_com[0], "R_com_y": R_com[1], "R_com_z": R_com[2]})
-            rec.update({"R_cnc_x": R_cnc[0], "R_cnc_y": R_cnc[1], "R_cnc_z": R_cnc[2]})
-
-            eig = parse_eigens(txt_out or "")
-            if eig:
-                rec["status_eigs"] = "OK"
-                for k in [
-                    "spin_case",
-                    "homo_eV",
-                    "lumo_eV",
-                    "gap_eV",
-                    "homo_a_eV",
-                    "lumo_a_eV",
-                    "gap_a_eV",
-                    "homo_b_eV",
-                    "lumo_b_eV",
-                    "gap_b_eV",
-                    "n_orb_a",
-                    "n_orb_b",
-                ]:
-                    if k in eig:
-                        rec[k] = eig[k]
-            else:
-                rec["status_eigs"] = "MISSING"
-
-            # Embed all properties into atoms.info for ExtXYZ output
-            for k, v in rec.items():
-                if v is not None:
-                    atoms.info[k] = v
-
-            return rec, atoms
+            return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density)
         except Exception as e:
             logger.error(f"Error parsing buffer for {x}: {e}")
             return None
