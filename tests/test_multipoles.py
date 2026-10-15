@@ -297,3 +297,25 @@ def test_process_single_in_memory_no_disk_extraction(tmp_path):
         assert not (calc_dir / "orca.gbw").exists()
 
 
+def test_spin_multipoles_ecp_light_elements(capsys):
+    import pytest
+    from pathlib import Path
+    from lavello_mlips.process_omol25 import build_orca_record
+
+    sample = Path("ani1xbb/aniBB_003_101_0_1")
+    if not sample.exists():
+        pytest.skip("ani1xbb sample not available")
+
+    build_orca_record(
+        (sample / "orca.out").read_text(),
+        (sample / "orca.property.txt").read_text(),
+        (sample / "orca.inp").read_text(),
+        (sample / "orca.gbw").read_bytes(),
+        (sample / "density_mat.npz").read_bytes(),
+    )
+    captured = capsys.readouterr()
+    assert "ECP def2-tzvpd not found" not in captured.out
+    assert "ECP def2-tzvpd not found" not in captured.err
+
+
+

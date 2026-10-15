@@ -277,10 +277,10 @@ def spin_multipoles_from_orca(
         if symbol in ecp:
             continue
         try:
-            load_ecp(basis, symbol)
+            if load_ecp(basis, symbol):
+                ecp[symbol] = basis
         except Exception:
             continue
-        ecp[symbol] = basis
     molecule = gto.M(
         atom=[(ELEMENTS[atomic_number], xyz) for atomic_number, xyz in atoms],
         basis=basis,
