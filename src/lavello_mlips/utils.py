@@ -49,3 +49,64 @@ def setup_logging(level: int = logging.INFO, log_file_path: Optional[Union[str, 
     util_logger.info(
         f"Logger initialized at level: {logging.getLevelName(level)} ({status_msg})"
     )
+
+
+def extract_gbw_bytes(raw_bytes: bytes) -> bytes:
+    """
+    Extract orca.gbw bytes from raw bytes that may be zstd-compressed (e.g. orca.gbw.zstd0)
+    or a zstd-compressed tar archive.
+    """
+    from io import BytesIO
+    import tarfile
+    from zstandard import ZstdDecompressor
+
+    decompressor = ZstdDecompressor()
+    decompressed_buffer = BytesIO()
+    try:
+        decompressor.copy_stream(BytesIO(raw_bytes), decompressed_buffer)
+        decompressed_buffer.seek(0)
+    except Exception:
+        # If not zstd-compressed or decompression fails, return raw_bytes
+        return raw_bytes
+
+    # If the decompressed buffer is a tar archive, extract orca.gbw from it
+    try:
+        with tarfile.open(fileobj=decompressed_buffer, mode="r") as tar:
+            for member in tar.getmembers():
+                if Path(member.name).name == "orca.gbw":
+                    f = tar.extractfile(member)
+                    if f:
+                        return f.read()
+            for member in tar.getmembers():
+                f = tar.extractfile(member)
+                if f:
+                    return f.read()
+    except tarfile.TarError:
+        pass
+
+    decompressed_buffer.seek(0)
+    return decompressed_buffer.read()
+
+
+def extract_gbw_from_path(gbw_path: Path) -> Optional[bytes]:
+    """
+    Read orca.gbw from path, checking for orca.gbw or orca.gbw.zstd0 in the parent directory.
+    If orca.gbw.zstd0 exists, extracts orca.gbw, writes it to disk, and returns its bytes.
+    """
+    if gbw_path.is_file():
+        return gbw_path.read_bytes()
+
+    zstd_candidates = [
+        gbw_path.with_name("orca.gbw.zstd0"),
+        gbw_path.with_name("orca.gbw.zst"),
+        gbw_path.with_name("orca.gbw.zstd"),
+    ]
+    for cand in zstd_candidates:
+        if cand.is_file():
+            gbw_bytes = extract_gbw_bytes(cand.read_bytes())
+            try:
+                gbw_path.write_bytes(gbw_bytes)
+            except Exception:
+                pass
+            return gbw_bytes
+    return None

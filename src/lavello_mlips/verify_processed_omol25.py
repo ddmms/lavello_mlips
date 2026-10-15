@@ -54,6 +54,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _to_clean_array(val):
+    """Normalize array-like or sequence object into a multi-dimensional numpy array."""
+    if isinstance(val, np.ndarray) and np.issubdtype(val.dtype, np.number):
+        return val
+    return np.array(val.tolist() if hasattr(val, "tolist") else val)
+
+
 def main() -> None:
     """
     Main entry point for verifying Parquet and ExtXYZ consistency.
@@ -202,53 +209,86 @@ def main() -> None:
 
             xyz_val = info[key]
 
-            pq_is_nan = pq_val is None or (
-                isinstance(pq_val, float) and math.isnan(pq_val)
-            )
-            xyz_is_nan = xyz_val is None or (
-                isinstance(xyz_val, float) and math.isnan(xyz_val)
-            )
+            # Unwrap 0-d arrays if any
+            if isinstance(pq_val, np.ndarray) and pq_val.ndim == 0:
+                pq_val = pq_val.item()
+            if isinstance(xyz_val, np.ndarray) and xyz_val.ndim == 0:
+                xyz_val = xyz_val.item()
 
-            if pq_is_nan:
-                if not xyz_is_nan:
+            is_pq_seq = isinstance(pq_val, (np.ndarray, list, tuple, pd.Series))
+            is_xyz_seq = isinstance(xyz_val, (np.ndarray, list, tuple, pd.Series))
+
+            if is_pq_seq or is_xyz_seq:
+                if not (is_pq_seq and is_xyz_seq):
                     logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet is NaN/None but XYZ has {xyz_val!r}"
+                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                        f"Sequence type mismatch: Parquet={type(pq_val).__name__} != XYZ={type(xyz_val).__name__}"
                     )
                     mismatches += 1
-            else:
-                if isinstance(pq_val, float) and isinstance(xyz_val, float):
-                    if not math.isclose(pq_val, xyz_val, rel_tol=1e-9, abs_tol=1e-12):
+                else:
+                    pq_arr = _to_clean_array(pq_val)
+                    xyz_arr = _to_clean_array(xyz_val)
+                    if pq_arr.shape != xyz_arr.shape:
                         logger.error(
-                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(pq_val - xyz_val)})"
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Array shape mismatch: Parquet shape {pq_arr.shape} != XYZ shape {xyz_arr.shape}"
                         )
                         mismatches += 1
-                elif pq_val != xyz_val:
-                    try:
-                        if isinstance(pq_val, np.ndarray) or isinstance(
-                            xyz_val, np.ndarray
-                        ):
-                            if not np.allclose(pq_val, xyz_val, equal_nan=True):
-                                logger.error(
-                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: NDArray mismatch"
-                                )
-                                mismatches += 1
-                            continue
-                        elif isinstance(pq_val, list) or isinstance(xyz_val, list):
-                            if not np.allclose(
-                                np.array(pq_val), np.array(xyz_val), equal_nan=True
-                            ):
-                                logger.error(
-                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: List/Array mismatch"
-                                )
-                                mismatches += 1
-                            continue
-                    except ImportError:
-                        pass
+                    elif np.issubdtype(pq_arr.dtype, np.number) and np.issubdtype(xyz_arr.dtype, np.number):
+                        if not np.allclose(pq_arr, xyz_arr, rtol=1e-9, atol=1e-12, equal_nan=True):
+                            logger.error(
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                f"NDArray mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                            )
+                            mismatches += 1
+                    else:
+                        if not np.array_equal(pq_arr, xyz_arr):
+                            logger.error(
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                f"List/Array mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                            )
+                            mismatches += 1
+            else:
+                pq_is_nan = pq_val is None or (
+                    isinstance(pq_val, (float, np.floating)) and math.isnan(pq_val)
+                ) or (isinstance(pq_val, type(pd.NA)) and pq_val is pd.NA)
+                xyz_is_nan = xyz_val is None or (
+                    isinstance(xyz_val, (float, np.floating)) and math.isnan(xyz_val)
+                ) or (isinstance(xyz_val, type(pd.NA)) and xyz_val is pd.NA)
 
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
-                    )
-                    mismatches += 1
+                if pq_is_nan or xyz_is_nan:
+                    if not (pq_is_nan and xyz_is_nan):
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet is NaN/None but XYZ has {xyz_val!r}"
+                            if pq_is_nan
+                            else f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: XYZ is NaN/None but Parquet has {pq_val!r}"
+                        )
+                        mismatches += 1
+                elif isinstance(pq_val, (bool, np.bool_)) or isinstance(xyz_val, (bool, np.bool_)):
+                    if not (isinstance(pq_val, (bool, np.bool_)) and isinstance(xyz_val, (bool, np.bool_))) or bool(pq_val) != bool(xyz_val):
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                        )
+                        mismatches += 1
+                elif isinstance(pq_val, (int, float, np.number)) and isinstance(xyz_val, (int, float, np.number)):
+                    if isinstance(pq_val, (float, np.floating)) or isinstance(xyz_val, (float, np.floating)):
+                        if not math.isclose(float(pq_val), float(xyz_val), rel_tol=1e-9, abs_tol=1e-12):
+                            logger.error(
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(float(pq_val) - float(xyz_val))})"
+                            )
+                            mismatches += 1
+                    else:
+                        if pq_val != xyz_val:
+                            logger.error(
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                            )
+                            mismatches += 1
+                else:
+                    if pq_val != xyz_val:
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                        )
+                        mismatches += 1
 
             if key in checked_props:
                 checked_props[key] += 1

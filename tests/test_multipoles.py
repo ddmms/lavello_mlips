@@ -4,6 +4,7 @@ import tarfile
 import numpy as np
 from zstandard import ZstdCompressor
 
+from lavello_mlips.utils import extract_gbw_bytes, extract_gbw_from_path
 from lavello_mlips.process_omol25 import (
     AU2B,
     AU2D,
@@ -171,3 +172,69 @@ def test_process_buffer_without_origin_keeps_orca_values_only():
     assert np.isclose(rec["dipole_x_D_orca"], 0.1 * AU2D)
     assert np.isclose(rec["Q_xx_B_orca"], quad_au[0] * AU2B)
     assert parse_quadrupole("") is None
+
+
+def test_extract_gbw_bytes():
+    c = ZstdCompressor()
+    gbw_content = b"TEST_GBW_DATA"
+    zstd_data = c.compress(gbw_content)
+    assert extract_gbw_bytes(zstd_data) == gbw_content
+
+    # In a tar archive compressed with zstd
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as t:
+        ti = tarfile.TarInfo("orca.gbw")
+        ti.size = len(gbw_content)
+        t.addfile(ti, io.BytesIO(gbw_content))
+    zstd_tar = c.compress(tar_buf.getvalue())
+    assert extract_gbw_bytes(zstd_tar) == gbw_content
+
+    # Uncompressed fallback
+    assert extract_gbw_bytes(gbw_content) == gbw_content
+
+
+def test_extract_gbw_from_path(tmp_path):
+    c = ZstdCompressor()
+    gbw_content = b"TEST_GBW_FROM_PATH"
+    folder = tmp_path / "calc1"
+    folder.mkdir()
+    zstd_path = folder / "orca.gbw.zstd0"
+    zstd_path.write_bytes(c.compress(gbw_content))
+
+    gbw_path = folder / "orca.gbw"
+    assert not gbw_path.exists()
+
+    res = extract_gbw_from_path(gbw_path)
+    assert res == gbw_content
+    assert gbw_path.exists()
+    assert gbw_path.read_bytes() == gbw_content
+
+
+def test_process_buffer_with_orca_gbw_zstd0():
+    from zstandard import ZstdDecompressor
+    c = ZstdCompressor()
+    gbw_content = b"GBW_INSIDE_TAR"
+    zstd_gbw = c.compress(gbw_content)
+
+    quad_au = np.array([-10.0, -11.0, -12.0, 0.5, 0.0, 0.0])
+    buf = make_orca_buffer(
+        np.array([0.1, 0.2, 0.3]), quad_au, np.zeros(3), 0, include_origin=True
+    )
+    decomp = io.BytesIO()
+    ZstdDecompressor().copy_stream(buf, decomp)
+    decomp.seek(0)
+
+    new_tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=decomp, mode="r") as old_tar:
+        with tarfile.open(fileobj=new_tar_buf, mode="w") as new_tar:
+            for m in old_tar.getmembers():
+                f = old_tar.extractfile(m)
+                new_tar.addfile(m, f)
+            ti = tarfile.TarInfo("orca.gbw.zstd0")
+            ti.size = len(zstd_gbw)
+            new_tar.addfile(ti, io.BytesIO(zstd_gbw))
+
+    new_buf = io.BytesIO(c.compress(new_tar_buf.getvalue()))
+    rec, _ = OmolDataProcessor._process_buffer(None, new_buf, "x")
+    assert rec["status_dipole"] == "OK"
+

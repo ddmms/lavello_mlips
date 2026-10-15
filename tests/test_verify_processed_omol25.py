@@ -1,4 +1,5 @@
 import subprocess
+import numpy as np
 import pandas as pd
 from ase import Atoms
 from ase.io import write
@@ -149,3 +150,75 @@ def test_verify_processed_omol25_skips_timing_keys(tmp_path):
         f"Verification falsely failed on timing key:\n{res.stdout}\n{res.stderr}"
     )
     assert "Data Consistency Verified" in res.stdout
+
+
+def test_verify_processed_omol25_array_properties_match(tmp_path):
+    pq_file = tmp_path / "test_arrays_match.parquet"
+    xyz_file = tmp_path / "test_arrays_match.xyz"
+
+    df = pd.DataFrame(
+        [
+            {
+                "geom_sha1": "hash_arr1",
+                "argonne_rel": "path_arr_1",
+                "dipole_vector": [0.0, 1.2, -0.5],
+                "quadrupole_matrix": [[1.0, 0.0, 0.0], [0.0, -0.5, 0.0], [0.0, 0.0, -0.5]],
+            }
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "hash_arr1"
+    a1.info["argonne_rel"] = "path_arr_1"
+    a1.info["dipole_vector"] = np.array([0.0, 1.2, -0.5])
+    a1.info["quadrupole_matrix"] = np.array([[1.0, 0.0, 0.0], [0.0, -0.5, 0.0], [0.0, 0.0, -0.5]])
+    write(str(xyz_file), [a1], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, (
+        f"Verification failed with array properties:\n{res.stdout}\n{res.stderr}"
+    )
+    assert "Data Consistency Verified" in res.stdout
+    assert "0 mismatches" in res.stdout
+
+
+def test_verify_processed_omol25_array_properties_mismatch(tmp_path):
+    pq_file = tmp_path / "test_arrays_mismatch.parquet"
+    xyz_file = tmp_path / "test_arrays_mismatch.xyz"
+
+    df = pd.DataFrame(
+        [
+            {
+                "geom_sha1": "hash_arr2",
+                "argonne_rel": "path_arr_2",
+                "dipole_vector": [0.0, 1.2, -0.5],
+            }
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "hash_arr2"
+    a1.info["argonne_rel"] = "path_arr_2"
+    a1.info["dipole_vector"] = np.array([0.0, 1.2, 0.5])  # sign difference
+    write(str(xyz_file), [a1], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Verification Failed" in res.stdout
+    assert "1 property inconsistencies" in res.stdout
+

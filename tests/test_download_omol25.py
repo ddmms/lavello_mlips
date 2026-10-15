@@ -241,6 +241,25 @@ def test_extract_buffer_zstd_not_tar(tmp_path):
     assert (prefix / "data").exists()
     assert (prefix / "data").read_bytes() == content
 
+
+def test_extract_buffer_orca_gbw_zstd0(tmp_path):
+    """Test that extract_buffer extracts orca.gbw from orca.gbw.zstd0."""
+    from lavello_mlips.download_omol25 import extract_buffer
+    from zstandard import ZstdCompressor
+
+    content = b"ORCA_GBW_DATA_STREAM"
+    c = ZstdCompressor()
+    compressed = c.compress(content)
+
+    buffer = io.BytesIO(compressed)
+    prefix = tmp_path / "mol_gbw"
+
+    extract_buffer(buffer, str(prefix), "orca.gbw.zstd0")
+
+    assert (prefix / "orca.gbw").exists()
+    assert (prefix / "orca.gbw").read_bytes() == content
+
+
 def test_process_prefix_error(tmp_path):
     """Test process_prefix error handling."""
     from lavello_mlips.download_omol25 import process_prefix

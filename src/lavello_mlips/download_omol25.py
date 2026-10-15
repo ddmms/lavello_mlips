@@ -11,7 +11,7 @@ from botocore.config import Config
 from tqdm import tqdm
 import time
 
-from .utils import setup_logging, json_load, json_dump
+from .utils import setup_logging, json_load, json_dump, extract_gbw_bytes
 from mpi4py import MPI
 from mpi4py import MPI as mpi
 
@@ -124,6 +124,10 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
                         content = f_extracted.read()
                         with open(out_dir / member.name, "wb") as f_out:
                             f_out.write(content)
+                        if Path(member.name).name == "orca.gbw.zstd0":
+                            gbw_content = extract_gbw_bytes(content)
+                            with open(out_dir / "orca.gbw", "wb") as f_gbw:
+                                f_gbw.write(gbw_content)
         except tarfile.TarError:
             working_buffer.seek(0)
             out_name = Path(k).name
@@ -132,8 +136,14 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
                     if out_name.endswith(suffix):
                         out_name = out_name[: -len(suffix)]
                         break
+            content = working_buffer.read()
+            if Path(k).name.startswith("orca.gbw") and (
+                Path(k).name.endswith((".zstd0", ".zst", ".zstd")) or is_zstd
+            ):
+                content = extract_gbw_bytes(content)
+                out_name = "orca.gbw"
             with open(out_dir / out_name, "wb") as f_out:
-                f_out.write(working_buffer.read())
+                f_out.write(content)
     except Exception as e:
         logger.error(f"Extraction error for {x}: {e}")
         raise

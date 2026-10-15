@@ -26,7 +26,7 @@ from ase.parallel import DummyMPI
 ase.parallel.world = DummyMPI()
 
 from .s3_processor import S3DataProcessor
-from .utils import json_load, json_dump
+from .utils import json_load, json_dump, extract_gbw_bytes, extract_gbw_from_path
 
 # ---------- constants ----------
 AU2D = 2.541746  # a.u. → Debye
@@ -668,7 +668,7 @@ def process_local_orca_dirs(root, output_dir) -> None:
     all_atoms: List[Any] = []
     for folder in folders:
         logger.info("processing %s", folder.name)
-        gbw_path = folder / "orca.gbw"
+        gbw_bytes = extract_gbw_from_path(folder / "orca.gbw")
         density_path = folder / "density_mat.npz"
         prop_path = folder / "orca.property.txt"
         try:
@@ -676,7 +676,7 @@ def process_local_orca_dirs(root, output_dir) -> None:
                 (folder / "orca.out").read_text(errors="replace"),
                 prop_path.read_text(errors="replace") if prop_path.is_file() else "",
                 (folder / "orca.inp").read_text(errors="replace"),
-                gbw_path.read_bytes() if gbw_path.is_file() else None,
+                gbw_bytes,
                 density_path.read_bytes() if density_path.is_file() else None,
             )
         except Exception as exc:
@@ -852,7 +852,13 @@ class OmolDataProcessor(S3DataProcessor):
             write(str(xyz_path), all_atoms, format="extxyz")
         self.chunk_idx += 1
 
-    def _process_buffer(self, buffer: BytesIO, x: str) -> Optional[Tuple[Dict[str, Any], Any]]:
+    def _process_buffer(
+        self,
+        buffer: BytesIO,
+        x: str,
+        gbw_extra: Optional[bytes] = None,
+        density_extra: Optional[bytes] = None,
+    ) -> Optional[Tuple[Dict[str, Any], Any]]:
         """Parse a .tar.zst buffer; returns (rec dict, ASE Atoms) or None."""
         try:
             from zstandard import ZstdDecompressor
@@ -867,12 +873,38 @@ class OmolDataProcessor(S3DataProcessor):
                 txt_out = tar.extractfile("orca.out").read().decode("utf-8")
                 txt_prop = tar.extractfile("orca.property.txt").read().decode("utf-8")
                 txt_inp = tar.extractfile("orca.inp").read().decode("utf-8")
-                gbw = tar.extractfile("orca.gbw").read() if "orca.gbw" in names else None
-                density = (
-                    tar.extractfile("density_mat.npz").read()
-                    if "density_mat.npz" in names
-                    else None
-                )
+
+                gbw = gbw_extra
+                if gbw is None:
+                    if "orca.gbw" in names:
+                        gbw = tar.extractfile("orca.gbw").read()
+                    elif "orca.gbw.zstd0" in names:
+                        gbw = extract_gbw_bytes(tar.extractfile("orca.gbw.zstd0").read())
+                    else:
+                        for m in tar.getmembers():
+                            m_base = Path(m.name).name
+                            if m_base == "orca.gbw":
+                                f = tar.extractfile(m)
+                                if f:
+                                    gbw = f.read()
+                                    break
+                            elif m_base in ("orca.gbw.zstd0", "orca.gbw.zst", "orca.gbw.zstd"):
+                                f = tar.extractfile(m)
+                                if f:
+                                    gbw = extract_gbw_bytes(f.read())
+                                    break
+
+                density = density_extra
+                if density is None:
+                    if "density_mat.npz" in names:
+                        density = tar.extractfile("density_mat.npz").read()
+                    else:
+                        for m in tar.getmembers():
+                            if Path(m.name).name == "density_mat.npz":
+                                f = tar.extractfile(m)
+                                if f:
+                                    density = f.read()
+                                    break
 
             return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density)
         except Exception as e:
@@ -883,11 +915,10 @@ class OmolDataProcessor(S3DataProcessor):
         """Processes a single task synchronously. Returns (rec, atoms, x) or None."""
         start_time = time.time()
         x = self.prefixes[idx]
-        key_list = self.data[x]["key"]
-        if isinstance(key_list, list):
-            tar_key = key_list[0]
-        else:
-            tar_key = key_list
+        raw_key = self.data[x]["key"]
+        key_list = [raw_key] if isinstance(raw_key, str) else list(raw_key)
+
+        tar_key = next((k for k in key_list if ".tar" in k), key_list[0])
         source = x + tar_key
         rec: Dict[str, Any] = {}
         try:
@@ -906,8 +937,51 @@ class OmolDataProcessor(S3DataProcessor):
                 response = s3_client.get_object(Bucket=self.args.bucket, Key=source)
                 buffer.write(response["Body"].read())
 
+            gbw_extra = None
+            density_extra = None
+
+            # Check if orca.gbw/orca.gbw.zstd0 or density_mat.npz are present as separate keys
+            for k in key_list:
+                if k == tar_key:
+                    continue
+                k_name = Path(k).name
+                if "orca.gbw" in k_name:
+                    try:
+                        if self.local_dir:
+                            gbw_extra = extract_gbw_from_path(self.local_dir / x / "orca.gbw")
+                            if gbw_extra is None:
+                                p = self.local_dir / (x + k)
+                                if p.exists():
+                                    gbw_extra = extract_gbw_bytes(p.read_bytes())
+                        elif s3_client:
+                            resp = s3_client.get_object(Bucket=self.args.bucket, Key=x + k)
+                            gbw_extra = extract_gbw_bytes(resp["Body"].read())
+                    except Exception as e_gbw:
+                        logger.warning(f"Failed to fetch/extract GBW for {x}: {e_gbw}")
+                elif "density_mat.npz" in k_name:
+                    try:
+                        if self.local_dir:
+                            p = self.local_dir / (x + k)
+                            if not p.exists():
+                                p = self.local_dir / x / "density_mat.npz"
+                            if p.exists():
+                                density_extra = p.read_bytes()
+                        elif s3_client:
+                            resp = s3_client.get_object(Bucket=self.args.bucket, Key=x + k)
+                            density_extra = resp["Body"].read()
+                    except Exception as e_dens:
+                        logger.warning(f"Failed to fetch density_mat for {x}: {e_dens}")
+
+            # If local_dir was provided, also check if orca.gbw exists on disk even if not in key_list
+            if self.local_dir and gbw_extra is None:
+                gbw_extra = extract_gbw_from_path(self.local_dir / x / "orca.gbw")
+            if self.local_dir and density_extra is None:
+                dens_p = self.local_dir / x / "density_mat.npz"
+                if dens_p.is_file():
+                    density_extra = dens_p.read_bytes()
+
             buffer.seek(0)
-            result = self._process_buffer(buffer, x)
+            result = self._process_buffer(buffer, x, gbw_extra=gbw_extra, density_extra=density_extra)
             if result is None:
                 return None
             parsed_rec, atoms = result
