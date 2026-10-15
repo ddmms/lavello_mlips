@@ -330,13 +330,19 @@ def spin_multipoles_from_orca(
 
 
 def _attach_spin_multipoles(
-    rec: Dict[str, Any], inp_text: str, gbw: Optional[bytes], density_npz: Optional[bytes]
+    rec: Dict[str, Any],
+    inp_text: str,
+    gbw: Optional[bytes],
+    density_npz: Optional[bytes],
+    structure_id: Optional[str] = None,
 ) -> None:
     if not gbw or not density_npz:
         rec["status_spin_multipole"] = "MISSING"
         return
+    ident = structure_id or rec.get("argonne_rel") or rec.get("data_id") or "unknown"
     charge = rec.get("total_charge_e")
     if charge is None:
+        logger.warning("Spin multipole failed for %s: missing total charge", ident)
         rec["status_spin_multipole"] = "NO_CHARGE"
         return
     try:
@@ -344,8 +350,9 @@ def _attach_spin_multipoles(
             spin_multipoles_from_orca(gbw, density_npz, parse_orca_basis(inp_text), int(charge))
         )
     except Exception as exc:
-        logger.error("Spin multipole failed: %s", exc)
+        logger.error("Spin multipole failed for %s: %s", ident, exc)
         rec["status_spin_multipole"] = "ERROR"
+
 
 
 # ---------- charge/multiplicity ----------
@@ -517,9 +524,13 @@ def build_orca_record(
     txt_inp: str,
     gbw: Optional[bytes],
     density: Optional[bytes],
+    structure_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Any]:
     """Parse one ORCA calculation, including spin multipoles when a GBW and density exist."""
     rec: Dict[str, Any] = {}
+    if structure_id:
+        rec["argonne_rel"] = structure_id
+        rec["data_id"] = str(structure_id).strip("/")
     Q, M = parse_charge_mult((txt_out or "") + "\n" + (txt_inp or ""))
     rec["total_charge_e"] = Q
     rec["multiplicity"] = M
@@ -645,7 +656,7 @@ def build_orca_record(
     else:
         rec["status_eigs"] = "MISSING"
 
-    _attach_spin_multipoles(rec, txt_inp or "", gbw, density)
+    _attach_spin_multipoles(rec, txt_inp or "", gbw, density, structure_id=structure_id)
 
     for k, v in rec.items():
         if v is not None:
@@ -872,7 +883,7 @@ class OmolDataProcessor(S3DataProcessor):
                                     density = f.read()
                                     break
 
-            return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density)
+            return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density, structure_id=x)
         except Exception as e:
             logger.error(f"Error parsing buffer for {x}: {e}")
             return None

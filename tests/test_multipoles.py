@@ -318,4 +318,32 @@ def test_spin_multipoles_ecp_light_elements(capsys):
     assert "ECP def2-tzvpd not found" not in captured.err
 
 
+def test_spin_multipoles_failure_logs_structure_id(caplog):
+    import logging
+    from lavello_mlips.process_omol25 import build_orca_record
+
+    orca_out = """
+Number of atoms .............................. 1
+-----------------------
+CARTESIAN COORDINATES (ANGSTROEM)
+-----------------------
+  H      0.000000    0.000000    0.000000
+
+****ORCA TERMINATED NORMALLY****
+"""
+    with caplog.at_level(logging.ERROR):
+        rec, _ = build_orca_record(
+            txt_out=orca_out,
+            txt_prop="",
+            txt_inp="! def2-SVP\n* xyz 0 1\n",
+            gbw=b"INVALID_GBW_BYTES",
+            density=b"INVALID_DENSITY",
+            structure_id="my_test_folder/structure_42",
+        )
+    assert rec["status_spin_multipole"] == "ERROR"
+    assert "Spin multipole failed for my_test_folder/structure_42" in caplog.text
+
+
+
+
 
