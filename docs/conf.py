@@ -15,8 +15,8 @@ project = "lavello_mlips"
 copyright = "2026, Alin M Elena"
 author = "Alin M Elena"
 
-version = "0.2.4"
-release = "0.2.4"
+version = "0.2.26"
+release = "0.2.26"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
