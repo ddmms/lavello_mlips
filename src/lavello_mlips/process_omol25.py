@@ -1,10 +1,14 @@
 import argparse
 import hashlib
+import json
 import logging
 import os
 import re
+import shutil
 import signal
 import struct
+import subprocess
+import tempfile
 import time
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -137,16 +141,27 @@ def shift_multipoles_to_coordinate_origin(
 
 
 # ---------- spin dipole / spin quadrupole from ORCA GBW + density ----------
-# PySCF real-spherical index of each ORCA / Molden component.
-# p: pz, px, py; d and f follow the Molden order used by ORCA's GBW.
-PYSCF_OF_ORCA = {
-    0: (0,),
-    1: (2, 0, 1),
-    2: (2, 3, 1, 4, 0),
-    3: (3, 4, 2, 5, 1, 6, 0),
-    4: (4, 5, 3, 6, 2, 7, 1, 8, 0),
-}
+# ORCA 6.0 GBW shell record. Contraction coefficients sit at +304; the AO
+# index where the next shell starts sits at +604. The last shell of an atom
+# instead stores (angular momentum, AO index) in the last 8 bytes of the
+# previous record.
 _GBW_SHELL_STRIDE = 608
+_GBW_PATH_BYTES = 1024
+# Control header that ORCA writes in front of the geometry in *.SHARKINP.tmp.
+# One-electron integrals only depend on the geometry and shells that follow.
+_SHARK_HEADER = (
+    " 1.0000000000000000e-10 9.9999999999999994e-12 -1.0000000000000000e+00 0 3 1.0000000000000001e-15 9.9999999999999995e-07 1.1000000000000001e+00",
+    "0 0 1 1 1 0 0 0 0 0 1 20 0 9.0000000000000000e+00 ",
+    "10 6 6 44 0 150 3 20 0 0 1.0000000000000000e+00 1.0000000000000000e-10",
+    "10 12 6 44 0 300 3 20 0 0 1.0000000000000000e+00 1.0000000000000000e-10",
+    "12 6 6 44 0 300 3 20 0 0 1.0000000000000000e+00 1.0000000000000000e-10",
+    "10 6 6 44 0 150 3 20 0 0 1.0000000000000000e+00 1.0000000000000000e-10",
+    " 0 0.0000000000000000e+00 1.0000000000000000e+00 0.0000000000000000e+00 0 0.0000000000000000e+00 1.0000000000000000e+00 0.0000000000000000e+00",
+    " -1 -1.0000000000000000e+00 ",
+    "-1 -1 ",
+)
+# orca_2json quadrupole matrices: xx, yy, zz, xy, xz, yz.
+_QUAD_PAIRS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
 
 def parse_orca_basis(inp_text: str) -> str:
@@ -178,11 +193,16 @@ def _gbw_geometry(data: bytes, offset: int) -> List[Tuple[int, np.ndarray]]:
 
 
 def _gbw_shells(data: bytes, basis_offset: int, natom: int):
-    """AO shells in ORCA's storage order, as (atom index, exponents)."""
+    """AO shells in ORCA storage order.
+
+    Each entry is (atom index, angular momentum, AO index, exponents, coefficients).
+    """
     pos = basis_offset + 24
     shells = []
     atom = 0
-    while atom < natom and pos + _GBW_SHELL_STRIDE <= len(data):
+    ao = 0
+    stride = _GBW_SHELL_STRIDE
+    while atom < natom and pos + stride <= len(data):
         nprim = struct.unpack_from("<i", data, pos)[0]
         if nprim == 0:
             pos += 8
@@ -194,44 +214,107 @@ def _gbw_shells(data: bytes, basis_offset: int, natom: int):
             [struct.unpack_from("<d", data, pos + 8 + 8 * k)[0] for k in range(nprim)],
             dtype=np.float64,
         )
-        shells.append((atom, exponents))
-        pos += _GBW_SHELL_STRIDE
+        if np.any(exponents <= 0.0):
+            break
+        ao_end = struct.unpack_from("<i", data, pos + 604)[0]
+        if ao_end <= ao:
+            angular, ao_tag = struct.unpack_from("<ii", data, pos - 8)
+            if ao_tag != ao or not 0 <= angular <= 6:
+                break
+            ao_end = ao + 2 * angular + 1
+        nfn = ao_end - ao
+        if nfn < 1 or nfn % 2 == 0 or nfn > 15:
+            break
+        coefficients = np.array(
+            [struct.unpack_from("<d", data, pos + 304 + 8 * k)[0] for k in range(nprim)],
+            dtype=np.float64,
+        )
+        shells.append((atom, (nfn - 1) // 2, ao, exponents, coefficients))
+        ao = ao_end
+        pos += stride
+    if not shells:
+        raise RuntimeError("could not read AO shells from the GBW")
     return shells
 
 
-def _orca_ao_permutation(mol, shells) -> np.ndarray:
-    pyscf_shells = []
-    ao = 0
-    for ib in range(mol.nbas):
-        angular = mol.bas_angular(ib)
-        nfn = 2 * angular + 1
-        pyscf_shells.append((ib, mol.bas_atom(ib), angular, np.array(mol.bas_exp(ib)), ao, nfn))
-        ao += nfn
-    used = set()
-    mapping = []
-    for atom, exponents in shells:
-        match = None
-        for shell in pyscf_shells:
-            if shell[0] in used or shell[1] != atom:
-                continue
-            if shell[3].size == exponents.size and np.allclose(
-                shell[3], exponents, rtol=1e-8, atol=0.0
-            ):
-                match = shell
-                break
-        if match is None:
-            continue
-        used.add(match[0])
-        angular, ao0, nfn = match[2], match[4], match[5]
-        order = PYSCF_OF_ORCA.get(angular)
-        if order is None or len(order) != nfn:
-            raise RuntimeError(f"no ORCA spherical order for l={angular}")
-        mapping.extend(ao0 + component for component in order)
-    if len(mapping) != mol.nao_nr() or len(set(mapping)) != mol.nao_nr():
-        raise RuntimeError(
-            f"AO map covers {len(set(mapping))} of {mol.nao_nr()} functions"
+def _orca_2json_executable() -> str:
+    configured = os.environ.get("ORCA_2JSON")
+    if configured:
+        return configured
+    found = shutil.which("orca_2json")
+    if not found:
+        raise RuntimeError("orca_2json not found; set ORCA_2JSON to the ORCA 6.0 binary")
+    return found
+
+
+def _sharkinp_text(atoms, shells) -> str:
+    per_atom: List[List] = [[] for _ in atoms]
+    for atom, angular, ao, exponents, coefficients in shells:
+        per_atom[atom].append((angular, ao, exponents, coefficients))
+    nao = shells[-1][2] + 2 * shells[-1][1] + 1
+    lines = [f"   {len(atoms)} {nao}  {len(shells)}   1   0   2   2  -1      2000   0   1   1   1   1   1"]
+    lines.extend(_SHARK_HEADER)
+    for index, (atomic_number, xyz) in enumerate(atoms):
+        lines.append(
+            f"  {atomic_number:2d}  {len(per_atom[index]):2d}  -1   {float(atomic_number):.16e}"
+            f"  {xyz[0]:.16e}  {xyz[1]:.16e}  {xyz[2]:.16e}  0.0"
         )
-    return np.asarray(mapping, dtype=int)
+    for group in per_atom:
+        for angular, ao, exponents, coefficients in group:
+            lines.append(f"   {angular}   {len(exponents)}  {ao}")
+            for exponent, coefficient in zip(exponents, coefficients):
+                lines.append(f"     {exponent:.16e}   {coefficient:.16e}")
+    lines.extend([" 0 0 ", " 0 0 ", " 0 0 ", "[ov]"])
+    return "\n".join(lines) + "\n"
+
+
+def _retarget_gbw_basename(gbw: bytes, basename: str) -> bytes:
+    """Point the GBW's embedded calculation path at ``basename`` (no extension)."""
+    path_offset = struct.unpack_from("<q", gbw, 0)[0]
+    token = basename.encode() + b"\x00"
+    if path_offset <= 0 or path_offset + _GBW_PATH_BYTES > len(gbw) or len(token) > _GBW_PATH_BYTES:
+        raise RuntimeError("GBW does not contain an ORCA 6.0 calculation-path field")
+    rewritten = bytearray(gbw)
+    rewritten[path_offset : path_offset + _GBW_PATH_BYTES] = b"\x00" * _GBW_PATH_BYTES
+    rewritten[path_offset : path_offset + len(token)] = token
+    return bytes(rewritten)
+
+
+def _integrals_from_orca_2json(gbw: bytes, atoms, shells):
+    """Overlap, dipole, and quadrupole integrals in the GBW's own AO basis."""
+    executable = _orca_2json_executable()
+    with tempfile.TemporaryDirectory(prefix="orca2json_") as directory:
+        base = str(Path(directory) / "orca")
+        Path(base + ".gbw").write_bytes(_retarget_gbw_basename(gbw, base))
+        Path(base + ".SHARKINP.tmp").write_text(_sharkinp_text(atoms, shells))
+        Path(base + ".json.conf").write_text(
+            json.dumps(
+                {
+                    "1elIntegrals": ["S"],
+                    "1elPropertyIntegrals": ["dipole", "quadrupole"],
+                }
+            )
+        )
+        completed = subprocess.run(
+            [executable, base + ".gbw"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(f"orca_2json failed: {detail[-2000:]}")
+        payload = json.loads(Path(base + ".json").read_text())
+    molecule = payload["Molecule"]
+    overlap = np.asarray(molecule["S-Matrix"], dtype=np.float64)
+    dipole = np.asarray(molecule["dipole"], dtype=np.float64)
+    quadrupole = np.asarray(molecule["quadrupole"], dtype=np.float64)
+    nao = overlap.shape[0]
+    if overlap.shape != (nao, nao) or dipole.shape != (3, nao, nao) or quadrupole.shape != (6, nao, nao):
+        raise RuntimeError(
+            f"unexpected integral shapes S{overlap.shape} dipole{dipole.shape} quadrupole{quadrupole.shape}"
+        )
+    return overlap, dipole, quadrupole
 
 
 def _unpack_triangular(values: np.ndarray, nao: int) -> np.ndarray:
@@ -253,8 +336,9 @@ def spin_multipoles_from_orca(
 ) -> Dict[str, Any]:
     """Spin dipole and traceless spin quadrupole at the coordinate origin.
 
-    The origin is the laboratory frame of the GBW geometry, (0, 0, 0), not
-    the centre of mass. ``spin_dipole_eA`` is in e·Å and
+    Overlap and multipole integrals come from ``orca_2json`` in the GBW AO
+    basis. The origin is the laboratory frame of the GBW geometry, (0, 0, 0),
+    not the centre of mass. ``spin_dipole_eA`` is in e·Å and
     ``spin_quadrupole_traceless`` is the traceless Cartesian tensor in e·Å²,
     raw second moment minus one third of its trace.
     """
@@ -283,12 +367,8 @@ def spin_multipoles_from_orca(
         cart=False,
         verbose=0,
     )
-    permutation = _orca_ao_permutation(molecule, shells)
-    nao = molecule.nao_nr()
-    overlap = molecule.intor("int1e_ovlp")[np.ix_(permutation, permutation)]
-    dipole = molecule.intor("int1e_r")[:, permutation][:, :, permutation]
-    quadrupole = molecule.intor("int1e_rr").reshape(3, 3, nao, nao)
-    quadrupole = quadrupole[:, :, permutation][:, :, :, permutation]
+    overlap, dipole, quadrupole6 = _integrals_from_orca_2json(gbw, atoms, shells)
+    nao = overlap.shape[0]
 
     with np.load(BytesIO(density_npz)) as packed:
         total = _unpack_triangular(np.asarray(packed["orca.scfp"]), nao)
@@ -299,8 +379,7 @@ def spin_multipoles_from_orca(
 
     n_total = float(np.einsum("ij,ji->", total, overlap))
     # def2 replaces some cores by an ECP, so the density integrates to the
-    # valence count. A few hundredths of an electron remain from the ORCA/PySCF
-    # contraction difference.
+    # valence count.
     expected = float(molecule.nelectron)
     if abs(n_total - expected) > 0.25:
         raise RuntimeError(
@@ -308,7 +387,10 @@ def spin_multipoles_from_orca(
         )
     n_spin = float(np.einsum("ij,ji->", spin, overlap))
     mu_au = np.einsum("ij,aij->a", spin, dipole)
-    raw_au = np.einsum("ij,abij->ab", spin, quadrupole)
+    second = np.einsum("ij,aij->a", spin, quadrupole6)
+    raw_au = np.zeros((3, 3), dtype=np.float64)
+    for value, (row, col) in zip(second, _QUAD_PAIRS):
+        raw_au[row, col] = raw_au[col, row] = value
     traceless_au = raw_au - np.eye(3) * (np.trace(raw_au) / 3.0)
     mu = mu_au * BOHR2A
     quad = traceless_au * (BOHR2A ** 2)
