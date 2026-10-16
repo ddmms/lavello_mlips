@@ -1,4 +1,5 @@
 import logging
+import numbers
 import os
 import zlib
 from pathlib import Path
@@ -7,8 +8,9 @@ from typing import Any, Union
 import ase.db.core
 import ase.db.row
 from ase import Atoms
-from ase.io.jsonio import decode, encode
+from ase.calculators.calculator import all_properties
 from ase.calculators.singlepoint import SinglePointCalculator
+from ase.io.jsonio import decode, encode
 import lmdb
 import numpy as np
 import orjson
@@ -104,7 +106,6 @@ class LMDBDatabase(ase.db.core.Database):
             data = {}
 
         # Capture atoms.info into key_value_pairs (scalars) and data (non-scalars)
-        import numbers
         scalar_types = (numbers.Real, str, bool, np.bool_)
         for k, v in atoms_obj.info.items():
             if isinstance(v, scalar_types):
@@ -183,7 +184,6 @@ class LMDBDatabase(ase.db.core.Database):
         dct = decode_bytestream(row_data, json_decode=True)
         
         # Ensure calculator properties are numpy arrays
-        from ase.calculators.calculator import all_properties
         for key in all_properties:
             if key in dct and isinstance(dct[key], list):
                 dct[key] = np.array(dct[key])
@@ -216,7 +216,6 @@ class LMDBDatabase(ase.db.core.Database):
         # Restore calculator properties
         results = {}
         # standard properties and any others stored in dct
-        from ase.calculators.calculator import all_properties
         for prop in list(all_properties) + ['free_energy']:
             val = getattr(row, prop, None)
             if val is not None:

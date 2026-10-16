@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import List
 
-from ase.io import write
+from ase.io import read, write
 from tqdm import tqdm
 
 from .aselmdb import LMDBDatabase
@@ -26,7 +26,6 @@ def cv_xyz_to_lmdb(input_files: List[str], output_file: str):
     with LMDBDatabase(output_file) as db:
         for input_file in input_files:
             logger.info(f"Reading {input_file}...")
-            from ase.io import read
             atoms_list = read(input_file, format="extxyz", index=":")
             if not isinstance(atoms_list, list):
                 atoms_list = [atoms_list]

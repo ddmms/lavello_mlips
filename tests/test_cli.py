@@ -1,6 +1,6 @@
-import sys
 import logging
-from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -133,3 +133,16 @@ def test_cli_worker_rank_no_logging(tmp_path):
 
         # setup_logging should NOT be called for rank > 0
         mock_setup_logging.assert_not_called()
+
+
+def test_warnings_captured_in_logger():
+    cmd = [
+        sys.executable,
+        "-c",
+        "import warnings; from lavello_mlips.utils import setup_logging; setup_logging(); warnings.warn('Test warning in logger!')",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "py.warnings - WARNING - " in res.stdout
+    assert "Test warning in logger!" in res.stdout
+

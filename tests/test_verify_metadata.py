@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 from ase import Atoms
 from ase.io import write
 from lavello_mlips.convert_to_lmdb import cv_xyz_to_lmdb

@@ -13,17 +13,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from ase.io import read, write
-
-try:
-    from mpi4py import MPI
-except ImportError:  # local spin-multipole runs do not need MPI
-    MPI = None
+from mpi4py import MPI
+from pyscf import gto
+from pyscf.data.elements import ELEMENTS
+from pyscf.gto.basis import load_ecp
 from tarfile import open as tar_open
 from tqdm import tqdm
+from zstandard import ZstdDecompressor
 
 import ase.parallel
-from ase.parallel import DummyMPI
-ase.parallel.world = DummyMPI()
+ase.parallel.world = ase.parallel.DummyMPI()
 
 from .s3_processor import S3DataProcessor
 from .utils import json_load, json_dump, extract_gbw_bytes, extract_gbw_from_path
@@ -32,7 +31,6 @@ from .utils import json_load, json_dump, extract_gbw_bytes, extract_gbw_from_pat
 AU2D = 2.541746  # a.u. → Debye
 D2EA = 0.20819434  # Debye → e·Å
 AU2B = 1.34503431  # a.u. → Buckingham
-AU2EAA = 0.2800285205359031  # a.u. → e·Å²
 B2EAA = 0.208194333  # Buckingham → e·Å²
 BOHR2A = 0.529177210903  # bohr → Å
 
@@ -40,13 +38,11 @@ MiB = 1024**2
 GiB = 1024 * MiB
 
 # Tags for MPI communication
-TAG_READY = 1
 TAG_DONE = 2
-TAG_STOP = 3
-TAG_TASK = 4
 TAG_RESULT = 5
 
 logger = logging.getLogger(__name__)
+logging.captureWarnings(True)
 
 # ---------- dipole ----------
 RE_DIP = re.compile(
@@ -262,10 +258,6 @@ def spin_multipoles_from_orca(
     ``spin_quadrupole_traceless`` is the traceless Cartesian tensor in e·Å²,
     raw second moment minus one third of its trace.
     """
-    from pyscf import gto
-    from pyscf.data.elements import ELEMENTS
-    from pyscf.gto.basis import load_ecp
-
     geometry_offset, basis_offset = _gbw_pointers(gbw)
     atoms = _gbw_geometry(gbw, geometry_offset)
     shells = _gbw_shells(gbw, basis_offset, len(atoms))
@@ -371,7 +363,7 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
                 Q = int(q_match)
             except ValueError:
                 # Ignore unparsable charge value; leave Q as-is (None or previous match).
-                logger.debug("Failed to parse charge value from match %r in text; ignoring.", q_match)
+                logger.warning("Failed to parse charge value from match %r in text; ignoring.", q_match)
         else:
             m_match = m.group(2)
             if m_match is not None:
@@ -379,7 +371,7 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
                     M = int(m_match)
                 except ValueError:
                     # Ignore unparsable multiplicity value; leave M as-is (None or previous match).
-                    logger.debug("Failed to parse multiplicity value from match %r in text; ignoring.", m_match)
+                    logger.warning("Failed to parse multiplicity value from match %r in text; ignoring.", m_match)
 
     m = RE_XYZ.search(txt)
     if m:
@@ -388,7 +380,7 @@ def parse_charge_mult(txt: str) -> Tuple[Optional[int], Optional[int]]:
             M = int(m.group(2))
         except ValueError:
             # Ignore unparsable XYZ header values; leave Q/M as determined above.
-            logger.debug(
+            logger.warning(
                 "Failed to parse charge/multiplicity from XYZ header match %r; ignoring.", m.groups()
             )
     return Q, M
@@ -838,8 +830,6 @@ class OmolDataProcessor(S3DataProcessor):
     ) -> Optional[Tuple[Dict[str, Any], Any]]:
         """Parse a .tar.zst buffer; returns (rec dict, ASE Atoms) or None."""
         try:
-            from zstandard import ZstdDecompressor
-
             decompressor = ZstdDecompressor()
             decompressed_buffer = BytesIO()
             decompressor.copy_stream(buffer, decompressed_buffer)

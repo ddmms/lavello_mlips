@@ -1,10 +1,10 @@
-import os
 from pathlib import Path
 import numpy as np
-from lavello_mlips.aselmdb import LMDBDatabase
-from lavello_mlips.convert_to_lmdb import cv_xyz_to_lmdb, cv_lmdb_to_xyz
+import pytest
 from ase import Atoms
 from ase.io import read, write
+from lavello_mlips.aselmdb import LMDBDatabase
+from lavello_mlips.convert_to_lmdb import cv_xyz_to_lmdb, cv_lmdb_to_xyz
 
 def test_convert_to_lmdb_aselmdb_format():
     input_xyz1 = "tests/sample1.xyz"
@@ -107,7 +107,6 @@ def test_convert_noble_gas_to_lmdb():
     output_lmdb = "tests/noble_gas.aselmdb"
     
     if not Path(data_xyz).exists():
-        import pytest
         pytest.skip(f"Data file {data_xyz} not found")
         
     # Clean up

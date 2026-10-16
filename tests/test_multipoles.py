@@ -1,10 +1,14 @@
 import io
+import json
+import logging
+from pathlib import Path
 import tarfile
+from unittest.mock import patch
 
 import numpy as np
-from zstandard import ZstdCompressor
+import pytest
+from zstandard import ZstdCompressor, ZstdDecompressor
 
-from lavello_mlips.utils import extract_gbw_bytes, extract_gbw_from_path
 from lavello_mlips.process_omol25 import (
     AU2B,
     AU2D,
@@ -12,11 +16,13 @@ from lavello_mlips.process_omol25 import (
     BOHR2A,
     D2EA,
     OmolDataProcessor,
+    build_orca_record,
     parse_dipole,
     parse_electric_origin,
     parse_quadrupole,
     shift_multipoles_to_coordinate_origin,
 )
+from lavello_mlips.utils import extract_gbw_bytes, extract_gbw_from_path
 
 QUAD_KEYS = ["xx", "yy", "zz", "xy", "xz", "yz"]
 
@@ -212,7 +218,6 @@ def test_extract_gbw_from_path(tmp_path):
 
 
 def test_process_buffer_with_orca_gbw_zstd0():
-    from zstandard import ZstdDecompressor
     c = ZstdCompressor()
     gbw_content = b"GBW_INSIDE_TAR"
     zstd_gbw = c.compress(gbw_content)
@@ -241,9 +246,6 @@ def test_process_buffer_with_orca_gbw_zstd0():
 
 
 def test_process_single_in_memory_no_disk_extraction(tmp_path):
-    import json
-    from unittest.mock import patch
-
     c = ZstdCompressor()
     calc_dir = tmp_path / "data" / "calc1"
     calc_dir.mkdir(parents=True)
@@ -298,10 +300,6 @@ def test_process_single_in_memory_no_disk_extraction(tmp_path):
 
 
 def test_spin_multipoles_ecp_light_elements(capsys):
-    import pytest
-    from pathlib import Path
-    from lavello_mlips.process_omol25 import build_orca_record
-
     sample = Path("ani1xbb/aniBB_003_101_0_1")
     if not sample.exists():
         pytest.skip("ani1xbb sample not available")
@@ -319,9 +317,6 @@ def test_spin_multipoles_ecp_light_elements(capsys):
 
 
 def test_spin_multipoles_failure_logs_structure_id(caplog):
-    import logging
-    from lavello_mlips.process_omol25 import build_orca_record
-
     orca_out = """
 Number of atoms .............................. 1
 -----------------------

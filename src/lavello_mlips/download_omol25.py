@@ -13,7 +13,6 @@ import time
 
 from .utils import setup_logging, json_load, json_dump, extract_gbw_bytes
 from mpi4py import MPI
-from mpi4py import MPI as mpi
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +244,7 @@ def main() -> None:
     args = parse_args()
 
     if args.mpi:
-        comm = mpi.COMM_WORLD
+        comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         size = comm.Get_size()
     else:

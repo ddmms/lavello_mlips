@@ -1,15 +1,19 @@
+import io
 import json
-import os
 import subprocess
 import sys
 import tarfile
-import io
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zstandard import ZstdCompressor
 
-import pytest
-from lavello_mlips.download_omol25 import main as download_main
+from lavello_mlips.download_omol25 import (
+    extract_buffer,
+    main as download_main,
+    manager_loop,
+    process_prefix,
+    worker_loop,
+)
 
 def create_mock_tar_zst(path: Path, files: dict):
     """Creates a mock .tar.zst file with given file contents."""
@@ -175,7 +179,6 @@ def test_download_sample_and_restart(tmp_path, monkeypatch):
 
 def test_extract_buffer_robustness(tmp_path):
     """Test that extract_buffer handles non-zstd non-tar data by just writing it."""
-    from lavello_mlips.download_omol25 import extract_buffer
     content = b"just some text"
     buffer = io.BytesIO(content)
     prefix = tmp_path / "robust_prefix"
@@ -187,8 +190,6 @@ def test_extract_buffer_robustness(tmp_path):
 
 def test_process_prefix_file_not_found(tmp_path, monkeypatch):
     """Test process_prefix when local file is missing."""
-    from lavello_mlips.download_omol25 import process_prefix
-    
     class MockArgs:
         local_dir = tmp_path / "empty_dir"
         bucket = "mock"
@@ -205,9 +206,6 @@ def test_process_prefix_file_not_found(tmp_path, monkeypatch):
 
 def test_process_prefix_s3(tmp_path, monkeypatch):
     """Test process_prefix in S3 mode with mock client."""
-    from lavello_mlips.download_omol25 import process_prefix
-    from unittest.mock import MagicMock
-    
     class MockArgs:
         local_dir = None
         bucket = "test-bucket"
@@ -225,9 +223,6 @@ def test_process_prefix_s3(tmp_path, monkeypatch):
 
 def test_extract_buffer_zstd_not_tar(tmp_path):
     """Test extract_buffer with valid zstd but invalid tar."""
-    from lavello_mlips.download_omol25 import extract_buffer
-    from zstandard import ZstdCompressor
-    
     content = b"not a tar"
     c = ZstdCompressor()
     compressed = c.compress(content)
@@ -244,9 +239,6 @@ def test_extract_buffer_zstd_not_tar(tmp_path):
 
 def test_extract_buffer_orca_gbw_zstd0(tmp_path):
     """Test that extract_buffer extracts orca.gbw from orca.gbw.zstd0."""
-    from lavello_mlips.download_omol25 import extract_buffer
-    from zstandard import ZstdCompressor
-
     content = b"ORCA_GBW_DATA_STREAM"
     c = ZstdCompressor()
     compressed = c.compress(content)
@@ -262,9 +254,6 @@ def test_extract_buffer_orca_gbw_zstd0(tmp_path):
 
 def test_process_prefix_error(tmp_path):
     """Test process_prefix error handling."""
-    from lavello_mlips.download_omol25 import process_prefix
-    from unittest.mock import MagicMock
-    
     class MockArgs:
         local_dir = None
         bucket = "test-bucket"
@@ -278,9 +267,6 @@ def test_process_prefix_error(tmp_path):
 
 def test_main_s3_error(tmp_path, monkeypatch):
     """Test main with S3 error to hit more lines."""
-    from lavello_mlips.download_omol25 import main as download_main
-    from unittest.mock import MagicMock, patch
-    
     data_source_json = tmp_path / "data_source_s3_err.json"
     login_file = tmp_path / "login.json"
     login_file.write_text(json.dumps({"access_key": "x", "secret_key": "y"}))
@@ -312,9 +298,6 @@ def test_main_s3_error(tmp_path, monkeypatch):
 
 def test_manager_loop_mocked(tmp_path):
     """Test manager_loop by mocking MPI communication."""
-    from lavello_mlips.download_omol25 import manager_loop
-    from unittest.mock import MagicMock, patch
-    
     comm = MagicMock()
     status = MagicMock()
     status.Get_source.return_value = 1
@@ -337,9 +320,6 @@ def test_manager_loop_mocked(tmp_path):
 
 def test_worker_loop_mocked():
     """Test worker_loop by mocking MPI communication."""
-    from lavello_mlips.download_omol25 import worker_loop
-    from unittest.mock import MagicMock, patch
-    
     comm = MagicMock()
     # mol_1/ (task assigned)
     # None (exit signal)

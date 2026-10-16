@@ -1,9 +1,12 @@
+from io import BytesIO
 import logging
-import sys
 from pathlib import Path
+import sys
+import tarfile
 from typing import Optional, Union, Any, IO
 
 import orjson
+from zstandard import ZstdDecompressor
 
 def json_load(fp: IO) -> Any:
     """Wrapper around orjson.loads to act as a drop-in replacement for json.load."""
@@ -40,9 +43,13 @@ def setup_logging(level: int = logging.INFO, log_file_path: Optional[Union[str, 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     for h in root_logger.handlers[:]:
-        root_logger.removeHandler(h)
+        if h.__class__.__name__ != "LogCaptureHandler":
+            root_logger.removeHandler(h)
     for h in handlers:
         root_logger.addHandler(h)
+
+    # Capture all warnings issued by the warnings module into the logger
+    logging.captureWarnings(True)
 
     # Use a logger for the utilities module to log initialization
     util_logger = logging.getLogger(__name__)
@@ -56,10 +63,6 @@ def extract_gbw_bytes(raw_bytes: bytes) -> bytes:
     Extract orca.gbw bytes from raw bytes that may be zstd-compressed (e.g. orca.gbw.zstd0)
     or a zstd-compressed tar archive.
     """
-    from io import BytesIO
-    import tarfile
-    from zstandard import ZstdDecompressor
-
     decompressor = ZstdDecompressor()
     decompressed_buffer = BytesIO()
     try:
