@@ -22,10 +22,10 @@ from tqdm import tqdm
 from zstandard import ZstdDecompressor
 
 import ase.parallel
-ase.parallel.world = ase.parallel.DummyMPI()
-
 from .s3_processor import S3DataProcessor
 from .utils import json_load, json_dump, extract_gbw_bytes, extract_gbw_from_path
+
+ase.parallel.world = ase.parallel.DummyMPI()
 
 # ---------- constants ----------
 AU2D = 2.541746  # a.u. → Debye

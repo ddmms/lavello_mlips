@@ -1,6 +1,8 @@
 import pytest
 from ase import Atoms
 from ase.io import write
+from mace.tools.fairchem_dataset import AseDBDataset as MaceDataset
+
 from lavello_mlips.convert_to_lmdb import cv_xyz_to_lmdb
 
 @pytest.fixture
@@ -22,12 +24,10 @@ def sample_aselmdb(tmp_path):
 
 def test_verify_fairchem(sample_aselmdb):
     """Verify metadata retrieval using Fairchem's AseDBDataset if available."""
-    try:
-        from fairchem.core.datasets import AseDBDataset
-    except (ImportError, ModuleNotFoundError):
-        pytest.skip("Fairchem not found in this environment.")
-
-    dataset = AseDBDataset({"src": str(sample_aselmdb)})
+    fairchem_datasets = pytest.importorskip(
+        "fairchem.core.datasets", reason="Fairchem not found in this environment."
+    )
+    dataset = fairchem_datasets.AseDBDataset({"src": str(sample_aselmdb)})
     atoms = dataset.get_atoms(0)
     
     assert atoms.get_chemical_formula() == "H2"
@@ -39,12 +39,7 @@ def test_verify_fairchem(sample_aselmdb):
     assert atoms.info["dict_val"]["k2"] == 2
 
 def test_verify_mace(sample_aselmdb):
-    """Verify metadata retrieval using MACE's AseDBDataset if available."""
-    try:
-        from mace.tools.fairchem_dataset import AseDBDataset as MaceDataset
-    except (ImportError, ModuleNotFoundError):
-        pytest.skip("MACE not found in this environment.")
-
+    """Verify metadata retrieval using MACE's AseDBDataset."""
     dataset = MaceDataset({"src": str(sample_aselmdb)})
     atoms = dataset.get_atoms(0)
     

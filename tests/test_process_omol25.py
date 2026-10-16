@@ -324,10 +324,6 @@ def test_lavello_mlips_restart_mpi():
 def test_extxyz_props_consistency():
     """Verify that every property in the Parquet row matches atoms.info in the .xyz output,
     linked via geom_sha1 as the common key."""
-    import math
-    import pandas as pd
-    import ase.io
-
     out_dir = Path("test_output_extxyz")
     local_data_dir = Path("mock_s3_data_extxyz")
     test_data_source = Path("test_extxyz_prefix.json")
@@ -368,8 +364,6 @@ def test_extxyz_props_consistency():
     assert len(parquet_files) == 1, f"Expected 1 merged Parquet, got: {parquet_files}"
     assert len(xyz_files) == 1, f"Expected 1 merged XYZ, got: {xyz_files}"
     # Confirm the merged names have no rank/part suffix (no underscore-digit pattern after group name)
-    import re
-
     for f in parquet_files + xyz_files:
         assert not re.search(r"_\d+(_part_\d+)?\.(parquet|xyz)$", f.name), (
             f"Part/rank file was not merged: {f.name}"
@@ -435,10 +429,6 @@ def test_restart_5ranks_matches_serial():
     """Verify that a two-phase MPI restart run (5 ranks, split halfway) produces
     the exact same Parquet rows and XYZ structures as a single serial run,
     matching each structure via geom_sha1."""
-    import math
-    import pandas as pd
-    import ase.io
-
     # ---- shared helpers ----
     def cleanup(*paths):
         for p in paths:
@@ -462,8 +452,6 @@ def test_restart_5ranks_matches_serial():
     # ---- setup: use the small prefix fixture (3 entries) ----
     data_source.write_bytes(Path("data/noble_gas_compounds_prefix.json").read_bytes())
     create_mock_data(local_data_dir, data_source)
-
-    import json
 
     with open(data_source) as f:
         n_total = len(json.load(f))
