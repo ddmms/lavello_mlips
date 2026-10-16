@@ -134,7 +134,7 @@ def test_download_mpi_functional(tmp_path, monkeypatch):
         "--local-dir", str(local_data_dir),
         "--mpi"
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    subprocess.run(cmd, capture_output=True, text=True)
     # assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     
     for p in prefixes:
@@ -335,3 +335,54 @@ def test_worker_loop_mocked():
     # Worker sends READY then task result, then READY then exits
     # total 3 sends: READY, mol_1/, READY
     assert comm.send.call_count == 3
+
+
+def test_download_keeps_archive_and_extracted_files(tmp_path, monkeypatch):
+    """Test that download_omol25 keeps the archive in the folder not only the extracted files."""
+    local_data_dir = tmp_path / "mock_s3"
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+
+    prefix = "mol_test/"
+    mock_files = {"orca.out": "LOG DATA", "orca.inp": "INPUT DATA"}
+    create_mock_tar_zst(local_data_dir / prefix / "orca.tar.zst", mock_files)
+
+    # Also add orca.gbw.zstd0
+    c = ZstdCompressor()
+    gbw_raw = c.compress(b"RAW_GBW_DATA")
+    (local_data_dir / prefix / "orca.gbw.zstd0").write_bytes(gbw_raw)
+
+    data_source = {
+        prefix: {
+            "key": ["orca.tar.zst", "orca.gbw.zstd0"],
+            "processed": False,
+        }
+    }
+    data_source_json = tmp_path / "data_source.json"
+    data_source_json.write_text(json.dumps(data_source))
+
+    test_args = [
+        "download_omol25",
+        "--data-source",
+        str(data_source_json),
+        "--local-dir",
+        str(local_data_dir),
+    ]
+
+    monkeypatch.chdir(dest_dir)
+    with patch.object(sys, "argv", test_args):
+        download_main()
+
+    out_folder = dest_dir / prefix
+    # Verify archives are preserved in folder
+    assert (out_folder / "orca.tar.zst").exists()
+    assert (out_folder / "orca.gbw.zstd0").exists()
+    assert (out_folder / "orca.gbw.zstd0").read_bytes() == gbw_raw
+
+    # Verify extracted files are also present
+    assert (out_folder / "orca.out").exists()
+    assert (out_folder / "orca.out").read_text() == "LOG DATA"
+    assert (out_folder / "orca.inp").exists()
+    assert (out_folder / "orca.inp").read_text() == "INPUT DATA"
+    assert (out_folder / "orca.gbw").exists()
+    assert (out_folder / "orca.gbw").read_bytes() == b"RAW_GBW_DATA"

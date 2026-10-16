@@ -99,8 +99,19 @@ def process_prefix(x: str, data: Dict[str, Any], args: argparse.Namespace, s3_cl
 
 
 def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
-    """Decompresses and extracts the buffer to disk."""
+    """Decompresses and extracts the buffer to disk, keeping the original archive."""
     try:
+        out_dir = Path(x)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_bytes = buffer.getvalue()
+        archive_file = out_dir / k
+        archive_file.parent.mkdir(parents=True, exist_ok=True)
+        if not (archive_file.exists() and archive_file.stat().st_size == len(raw_bytes)):
+            with open(archive_file, "wb") as f_arch:
+                f_arch.write(raw_bytes)
+
+        buffer.seek(0)
         decompressor = ZstdDecompressor()
         working_buffer = BytesIO()
         try:
@@ -112,16 +123,15 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
             working_buffer = buffer
             is_zstd = False
 
-        out_dir = Path(x)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         try:
             with tar_open(fileobj=working_buffer, mode="r") as tar:
                 for member in tar.getmembers():
                     f_extracted = tar.extractfile(member)
                     if f_extracted:
                         content = f_extracted.read()
-                        with open(out_dir / member.name, "wb") as f_out:
+                        member_out = out_dir / member.name
+                        member_out.parent.mkdir(parents=True, exist_ok=True)
+                        with open(member_out, "wb") as f_out:
                             f_out.write(content)
                         if Path(member.name).name == "orca.gbw.zstd0":
                             gbw_content = extract_gbw_bytes(content)
@@ -141,8 +151,11 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
             ):
                 content = extract_gbw_bytes(content)
                 out_name = "orca.gbw"
-            with open(out_dir / out_name, "wb") as f_out:
-                f_out.write(content)
+            out_path = out_dir / out_name
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if out_path != archive_file or not archive_file.exists():
+                with open(out_path, "wb") as f_out:
+                    f_out.write(content)
     except Exception as e:
         logger.error(f"Extraction error for {x}: {e}")
         raise
