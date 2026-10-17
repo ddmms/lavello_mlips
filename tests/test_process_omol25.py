@@ -811,3 +811,75 @@ def test_final_merge_mismatch_resets_restart_json(tmp_path):
         saved_data = json.load(f)
     assert saved_data["struct_1"]["processed"] is True
     assert saved_data["struct_2"]["processed"] is False
+
+
+def test_restart_recovers_intersection_on_length_mismatch(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    data_source = tmp_path / "intersect_test_prefix.json"
+    restart_file = tmp_path / "intersect_test_prefix_restart.json"
+
+    data = {
+        "struct_1": {"key": "s1.tar.zst", "processed": True},
+        "struct_2": {"key": "s2.tar.zst", "processed": True},
+        "struct_3": {"key": "s3.tar.zst", "processed": True},
+        "struct_4": {"key": "s4.tar.zst", "processed": False},
+    }
+    with open(data_source, "w") as f:
+        json.dump(data, f)
+    with open(restart_file, "w") as f:
+        json.dump(data, f)
+
+    # Parquet has struct_1 and struct_2 (2 rows)
+    # ExtXYZ has struct_1, struct_2, and struct_3 (3 structures)
+    df = pd.DataFrame([
+        {"argonne_rel": "struct_1", "data_id": 1, "energy": -1.0},
+        {"argonne_rel": "struct_2", "data_id": 2, "energy": -2.0},
+    ])
+    df.to_parquet(output_dir / "props_intersect_test.parquet", index=False)
+
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at1.info = {"argonne_rel": "struct_1", "data_id": 1}
+    at2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at2.info = {"argonne_rel": "struct_2", "data_id": 2}
+    at3 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.76]])
+    at3.info = {"argonne_rel": "struct_3", "data_id": 3}
+    ase.io.write(str(output_dir / "structs_intersect_test.xyz"), [at1, at2, at3], format="extxyz")
+
+    class MockArgs:
+        def __init__(self):
+            self.data_source = restart_file
+            self.output_dir = output_dir
+            self.bucket = None
+            self.local_dir = None
+            self.login_file = None
+            self.sample_size = -1
+            self.batch_size = 100
+            self.start_index = 0
+            self.restart = True
+            self.mpi = False
+            self.memory_threshold_gb = 10.0
+
+    args = MockArgs()
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(args, rank=0, size=1, comm=None)
+
+    pq_path = output_dir / "props_intersect_test.parquet"
+    xyz_path = output_dir / "structs_intersect_test.xyz"
+    assert pq_path.exists()
+    assert xyz_path.exists()
+    repaired_df = pd.read_parquet(pq_path)
+    repaired_atoms = ase.io.read(str(xyz_path), index=":")
+    assert len(repaired_df) == 2
+    assert len(repaired_atoms) == 2
+    assert set(repaired_df["argonne_rel"]) == {"struct_1", "struct_2"}
+    assert {at.info["argonne_rel"] for at in repaired_atoms} == {"struct_1", "struct_2"}
+
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data["struct_1"]["processed"] is True
+    assert saved_data["struct_2"]["processed"] is True
+    assert saved_data["struct_3"]["processed"] is False
+    assert saved_data["struct_4"]["processed"] is False
+
+    assert set(processor.prefixes) == {"struct_3", "struct_4"}

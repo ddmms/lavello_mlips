@@ -807,47 +807,128 @@ class OmolDataProcessor(S3DataProcessor):
                     if not pf.name.endswith(".tmp")
                 ]
 
+                all_disk_keys = set()
+                had_repair = False
+
                 for pf in tqdm(parquet_files, desc="Recovering parts", disable=len(parquet_files) == 0):
                     xyz_file = pf.parent / pf.name.replace(
                         "props_", "structs_"
                     ).replace(".parquet", ".xyz")
 
+                    if not xyz_file.exists():
+                        logger.warning(
+                            f"Discarding incomplete part {pf.name}: Missing ExtXYZ partner {xyz_file.name}"
+                        )
+                        pf.unlink(missing_ok=True)
+                        had_repair = True
+                        continue
+
                     try:
-                        if not xyz_file.exists():
-                            raise FileNotFoundError(
-                                f"Missing ExtXYZ partner: {xyz_file.name}"
-                            )
+                        df_rel = pd.read_parquet(pf, columns=["argonne_rel"])
+                    except Exception as e_pq:
+                        logger.warning(f"Discarding corrupt Parquet {pf.name}: {e_pq}")
+                        pf.unlink(missing_ok=True)
+                        xyz_file.unlink(missing_ok=True)
+                        had_repair = True
+                        continue
 
-                        df = pd.read_parquet(pf, columns=["argonne_rel"])
-
+                    try:
                         atoms_list = read(str(xyz_file), index=":")
                         if not isinstance(atoms_list, list):
                             atoms_list = [atoms_list] if atoms_list else []
+                    except Exception as e_xyz:
+                        logger.warning(f"Discarding corrupt ExtXYZ {xyz_file.name}: {e_xyz}")
+                        pf.unlink(missing_ok=True)
+                        xyz_file.unlink(missing_ok=True)
+                        had_repair = True
+                        continue
 
-                        if len(df) != len(atoms_list):
-                            raise ValueError(
-                                f"Length mismatch: {len(df)} Parquet rows vs {len(atoms_list)} XYZ structures"
-                            )
+                    pq_keys = (
+                        set(df_rel["argonne_rel"].dropna().unique())
+                        if "argonne_rel" in df_rel.columns
+                        else set()
+                    )
+                    xyz_keys = {
+                        at.info.get("argonne_rel")
+                        for at in atoms_list
+                        if at.info.get("argonne_rel") is not None
+                    }
+                    common_keys = pq_keys & xyz_keys
 
-                        # If we pass all checks, mark as processed!
-                        for x in df["argonne_rel"].dropna().unique():
-                            if x in self.data and not self.data[x].get(
-                                "processed", False
-                            ):
-                                self.data[x]["processed"] = True
-                                recovered_count += 1
-
-                    except Exception as e:
-                        # If a part file is corrupt/orphaned, delete it so _final_merge ignores it
+                    if not common_keys:
                         logger.warning(
-                            f"Discarding corrupt/incomplete part {pf.name}: {e}"
+                            f"Discarding {pf.name} and {xyz_file.name}: zero overlapping structures ({len(pq_keys)} Parquet keys vs {len(xyz_keys)} XYZ keys)."
                         )
                         pf.unlink(missing_ok=True)
                         xyz_file.unlink(missing_ok=True)
+                        had_repair = True
+                        continue
 
-                if recovered_count > 0:
+                    mismatch = (
+                        len(df_rel) != len(atoms_list)
+                        or len(df_rel) != len(common_keys)
+                        or len(atoms_list) != len(common_keys)
+                        or pq_keys != xyz_keys
+                    )
+
+                    if mismatch:
+                        had_repair = True
+                        mismatched_keys = pq_keys ^ xyz_keys
+                        logger.warning(
+                            f"Length/key mismatch in {pf.name} and {xyz_file.name}: "
+                            f"{len(df_rel)} Parquet rows vs {len(atoms_list)} XYZ structures. "
+                            f"Recovering {len(common_keys)} intersecting structures. "
+                            f"{len(mismatched_keys)} mismatched keys will be reprocessed."
+                        )
+                        try:
+                            df_full = pd.read_parquet(pf)
+                            df_pruned = df_full[df_full["argonne_rel"].isin(common_keys)].drop_duplicates(
+                                subset=["argonne_rel"], keep="last"
+                            )
+                            seen_xyz = set()
+                            atoms_pruned = []
+                            for at in reversed(atoms_list):
+                                rel = at.info.get("argonne_rel")
+                                if rel in common_keys and rel not in seen_xyz:
+                                    seen_xyz.add(rel)
+                                    atoms_pruned.append(at)
+                            atoms_pruned.reverse()
+
+                            tmp_pq = pf.with_suffix(".parquet.tmp")
+                            tmp_xyz = xyz_file.with_suffix(".xyz.tmp")
+                            df_pruned.to_parquet(tmp_pq, index=False)
+                            write(str(tmp_xyz), atoms_pruned, format="extxyz")
+                            tmp_pq.replace(pf)
+                            tmp_xyz.replace(xyz_file)
+                        except Exception as e_repair:
+                            logger.error(
+                                f"Failed to repair/prune {pf.name}: {e_repair}. Discarding."
+                            )
+                            pf.unlink(missing_ok=True)
+                            xyz_file.unlink(missing_ok=True)
+                            continue
+
+                    for x in common_keys:
+                        all_disk_keys.add(x)
+                        if x in self.data and not self.data[x].get("processed", False):
+                            self.data[x]["processed"] = True
+                            recovered_count += 1
+
+                if parquet_files:
+                    for x, item in self.data.items():
+                        if item.get("processed", False) and x not in all_disk_keys:
+                            logger.warning(
+                                f"Key '{x}' marked processed in restart file but not found in disk outputs. Resetting to processed=False."
+                            )
+                            self.data[x]["processed"] = False
+                            had_repair = True
+
+                if had_repair or recovered_count > 0:
+                    self._save_restart_file()
+
+                if recovered_count > 0 or all_disk_keys:
                     logger.info(
-                        f"Recovered {recovered_count} previously processed items from disk, and discarded invalid parts."
+                        f"Recovered {len(all_disk_keys)} total valid items from disk ({recovered_count} newly marked processed)."
                     )
 
             if self.size > 1 and self.comm is not None:
@@ -1274,10 +1355,19 @@ class OmolDataProcessor(S3DataProcessor):
             logger.warning(
                 f"{len(mismatched_keys)} structures mismatched between Parquet and ExtXYZ during merge."
             )
-            if len(pq_keys) != len(valid_keys):
-                final_df = final_df[final_df["argonne_rel"].isin(valid_keys)]
-            if len(xyz_keys) != len(valid_keys):
-                all_atoms = [at for at in all_atoms if at.info.get("argonne_rel") in valid_keys]
+        if len(pq_keys) != len(valid_keys) or len(final_df) != len(valid_keys):
+            final_df = final_df[final_df["argonne_rel"].isin(valid_keys)].drop_duplicates(
+                subset=["argonne_rel"], keep="last"
+            )
+        if len(xyz_keys) != len(valid_keys) or len(all_atoms) != len(valid_keys):
+            seen_rel = set()
+            unique_atoms = []
+            for at in reversed(all_atoms):
+                rel = at.info.get("argonne_rel")
+                if rel in valid_keys and rel not in seen_rel:
+                    seen_rel.add(rel)
+                    unique_atoms.append(at)
+            all_atoms = list(reversed(unique_atoms))
 
         pq_write_success = False
         if not final_df.empty:
