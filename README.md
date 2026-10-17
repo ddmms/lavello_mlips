@@ -46,7 +46,11 @@ Cross-reference a generated Parquet dataset with its respective ExtXYZ file to g
 ```bash
 verify_processed_omol25 --parquet props_group.parquet --extxyz structs_group.xyz
 ```
-* This rigorously structurally aligns both tables via `geom_sha1` and flags any mathematically misassigned properties.
+* Optionally cross-reference keys against a prefix JSON file (e.g. `ani2x_prefix.json`):
+```bash
+verify_processed_omol25 --parquet props_group.parquet --extxyz structs_group.xyz --json ani2x_prefix.json
+```
+* This rigorously structurally aligns both tables via `geom_sha1` and `argonne_rel`, checks consistency against prefix JSON keys if provided, and flags any mathematically misassigned properties.
 * Embedded timing metadata such as `process_time_s` are strictly and unconditionally excluded to prevent false-positive errors.
 
 ## License

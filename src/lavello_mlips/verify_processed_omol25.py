@@ -46,6 +46,16 @@ def parse_args() -> argparse.Namespace:
         help="Path to the corresponding .xyz file to cross-reference.",
     )
     parser.add_argument(
+        "--json",
+        "--json-file",
+        "--data-source",
+        "--prefix-json",
+        dest="json_file",
+        type=Path,
+        default=None,
+        help="Optional path to prefix JSON file (e.g. ani2x_prefix.json) to cross-reference keys with Parquet and ExtXYZ.",
+    )
+    parser.add_argument(
         "--skip-keys",
         nargs="*",
         default=["process_time_s", "argonne_rel", "data_id"],
@@ -75,6 +85,8 @@ def main() -> None:
         raise FileNotFoundError(f"Parquet file '{args.parquet}' does not exist.")
     if not args.extxyz.exists():
         raise FileNotFoundError(f"ExtXYZ file '{args.extxyz}' does not exist.")
+    if args.json_file is not None and not args.json_file.exists():
+        raise FileNotFoundError(f"JSON file '{args.json_file}' does not exist.")
 
     logger.info(f"Loading Parquet file from {args.parquet}...")
     df = pd.read_parquet(args.parquet)
@@ -85,7 +97,11 @@ def main() -> None:
 
     logger.info(f"Loaded {len(df)} records from Parquet.")
     parquet_by_sha = {row["geom_sha1"]: row for _, row in df.iterrows()}
-    parquet_by_argone_rel = {row["argonne_rel"]: row for _, row in df.iterrows()}
+    parquet_by_argone_rel = {
+        row["argonne_rel"]: row
+        for _, row in df.iterrows()
+        if "argonne_rel" in row and pd.notna(row["argonne_rel"])
+    }
     logger.info(f"Loading ExtXYZ file from {args.extxyz} (this may take a moment)...")
     all_atoms = read(str(args.extxyz), index=":")
     if not isinstance(all_atoms, list):
@@ -97,7 +113,10 @@ def main() -> None:
     for i, at in enumerate(all_atoms):
         sha = at.info.get("geom_sha1")
         rel = at.info.get("argonne_rel")
-        xyz_by_argone_rel_list[rel].append(at)
+        if rel is not None and not (isinstance(rel, float) and math.isnan(rel)):
+            xyz_by_argone_rel_list[rel].append(at)
+        else:
+            logger.warning(f"ExtXYZ frame {i} is missing 'argonne_rel' in atoms.info.")
         if not sha:
             logger.warning(f"ExtXYZ frame {i} is missing 'geom_sha1' in atoms.info.")
             continue
@@ -175,6 +194,95 @@ def main() -> None:
         logger.info(
             f"✅ Structural alignment perfect: both files contain exactly {len(pq_argonne_rels)} uniquely matched molecules."
         )
+
+    if args.json_file is not None:
+        logger.info(f"\n--- Alignment with JSON ({args.json_file.name}) ---")
+        with open(args.json_file, "r", encoding="utf-8") as f:
+            json_data = json.load(f)
+
+        if isinstance(json_data, dict):
+            json_keys = set(json_data.keys())
+            processed_count = sum(
+                1
+                for v in json_data.values()
+                if isinstance(v, dict) and v.get("processed", False)
+            )
+            logger.info(f"Loaded {len(json_keys)} keys from {args.json_file.name}.")
+            if processed_count > 0:
+                logger.info(
+                    f"   JSON metadata: {processed_count}/{len(json_keys)} keys marked as processed."
+                )
+        elif isinstance(json_data, list):
+            json_keys = set(json_data)
+            logger.info(f"Loaded {len(json_keys)} keys from {args.json_file.name}.")
+        else:
+            raise ValueError(
+                f"Expected dict or list in '{args.json_file}', got {type(json_data).__name__}."
+            )
+
+        missing_in_pq_from_json = json_keys - pq_argonne_rels
+        extra_in_pq_from_json = pq_argonne_rels - json_keys
+        missing_in_xyz_from_json = json_keys - xyz_argonne_rels
+        extra_in_xyz_from_json = xyz_argonne_rels - json_keys
+
+        json_keys_norm = {k.rstrip("/") for k in json_keys}
+        pq_keys_norm = {k.rstrip("/") for k in pq_argonne_rels}
+        xyz_keys_norm = {k.rstrip("/") for k in xyz_argonne_rels}
+
+        pq_match = False
+        if not missing_in_pq_from_json and not extra_in_pq_from_json:
+            logger.info(f"✅ All {len(json_keys)} keys in JSON match Parquet records.")
+            pq_match = True
+        elif json_keys_norm == pq_keys_norm:
+            logger.warning(
+                f"⚠️ Parquet records match JSON keys when ignoring trailing slashes ({len(json_keys)} keys)."
+            )
+            pq_match = True
+        else:
+            if missing_in_pq_from_json:
+                logger.error(
+                    f"❌ {len(missing_in_pq_from_json)} keys found in JSON but missing from Parquet."
+                )
+                sample = sorted(list(missing_in_pq_from_json))[:5]
+                logger.error(f"   Examples missing in Parquet: {sample}")
+            if extra_in_pq_from_json:
+                logger.error(
+                    f"❌ {len(extra_in_pq_from_json)} records found in Parquet but missing from JSON."
+                )
+                sample = sorted(list(extra_in_pq_from_json))[:5]
+                logger.error(f"   Examples extra in Parquet: {sample}")
+
+        xyz_match = False
+        if not missing_in_xyz_from_json and not extra_in_xyz_from_json:
+            logger.info(f"✅ All {len(json_keys)} keys in JSON match ExtXYZ structures.")
+            xyz_match = True
+        elif json_keys_norm == xyz_keys_norm:
+            logger.warning(
+                f"⚠️ ExtXYZ structures match JSON keys when ignoring trailing slashes ({len(json_keys)} keys)."
+            )
+            xyz_match = True
+        else:
+            if missing_in_xyz_from_json:
+                logger.error(
+                    f"❌ {len(missing_in_xyz_from_json)} keys found in JSON but missing from ExtXYZ."
+                )
+                sample = sorted(list(missing_in_xyz_from_json))[:5]
+                logger.error(f"   Examples missing in ExtXYZ: {sample}")
+            if extra_in_xyz_from_json:
+                logger.error(
+                    f"❌ {len(extra_in_xyz_from_json)} structures found in ExtXYZ but missing from JSON."
+                )
+                sample = sorted(list(extra_in_xyz_from_json))[:5]
+                logger.error(f"   Examples extra in ExtXYZ: {sample}")
+
+        if pq_match and xyz_match:
+            logger.info(
+                f"✅ JSON Alignment perfect: All {len(json_keys)} keys correspond across JSON, Parquet, and ExtXYZ."
+            )
+        else:
+            logger.error(
+                "❌ JSON Alignment failed: Key discrepancies detected between JSON, Parquet, and ExtXYZ."
+            )
 
     logger.info("\n--- Property Validation by argonne_rel ---")
     common_argonne_rels = pq_argonne_rels.intersection(xyz_argonne_rels)
