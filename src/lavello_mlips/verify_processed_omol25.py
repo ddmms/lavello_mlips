@@ -73,6 +73,51 @@ def _to_clean_array(val):
     return np.array(val.tolist() if hasattr(val, "tolist") else val)
 
 
+def _is_null_or_nan(val) -> bool:
+    """Check if a value is None, NaN, pd.NA, or empty null representation."""
+    if val is None:
+        return True
+    if isinstance(val, np.ndarray):
+        if val.ndim == 0:
+            item = val.item()
+            if item is None:
+                return True
+            if isinstance(item, (float, np.floating)) and math.isnan(item):
+                return True
+            return False
+        return val.size == 0
+    if isinstance(val, (list, tuple)):
+        return len(val) == 0
+    if isinstance(val, type(pd.NA)) and val is pd.NA:
+        return True
+    if isinstance(val, (float, np.floating)) and math.isnan(val):
+        return True
+    return False
+
+
+def _format_val_summary(val) -> str:
+    """Format a concise summary of a property value (type, shape, and preview)."""
+    if _is_null_or_nan(val):
+        return "NaN/None"
+    if isinstance(val, np.ndarray):
+        if val.ndim == 0:
+            return f"array({val.item()!r}, dtype={val.dtype})"
+        return f"array(shape={val.shape}, dtype={val.dtype})"
+    if isinstance(val, (list, tuple)):
+        if val and isinstance(val[0], (list, tuple)):
+            dims = f"{len(val)}x{len(val[0])}"
+            return f"list(shape={dims})"
+        if len(val) > 4:
+            return f"list(len={len(val)}, preview={val[:3]}...)"
+        return f"list({val!r})"
+    if isinstance(val, (int, float, np.number, bool, np.bool_)):
+        return f"{type(val).__name__}({val})"
+    s = repr(val)
+    if len(s) > 50:
+        return f"{type(val).__name__}({s[:47]}...)"
+    return f"{type(val).__name__}({s})"
+
+
 def get_structure_charge(at, pq_row=None) -> Optional[float]:
     """
     Extract total charge of a structure from atoms.info, initial charges, or Parquet row.
@@ -131,6 +176,10 @@ def main() -> None:
         stem = args.parquet.stem
         raw_prefix = stem[6:] if stem.startswith("props_") else stem
         candidate_names = [
+            f"{stem}_prefix_restart.json",
+            f"{raw_prefix}_prefix_restart.json",
+            f"{stem}_restart.json",
+            f"{raw_prefix}_restart.json",
             f"{stem}_prefix.json",
             f"{raw_prefix}_prefix.json",
             f"{stem}.json",
@@ -354,6 +403,7 @@ def main() -> None:
             f"✅ Structural alignment perfect: both files contain exactly {len(pq_argonne_rels)} uniquely matched molecules."
         )
 
+    restart_status_by_rel = {}
     if args.json_file is not None:
         logger.info(f"\n--- Alignment with JSON ({args.json_file.name}) ---")
         with open(args.json_file, "r", encoding="utf-8") as f:
@@ -366,6 +416,15 @@ def main() -> None:
                 for v in json_data.values()
                 if isinstance(v, dict) and v.get("processed", False)
             )
+            for k, v in json_data.items():
+                if isinstance(v, dict):
+                    p = v.get("processed")
+                    status_str = f"processed={p}" if p is not None else "in_json"
+                else:
+                    status_str = "in_json"
+                restart_status_by_rel[k] = status_str
+                restart_status_by_rel[k.rstrip("/")] = status_str
+                restart_status_by_rel[k.rstrip("/") + "/"] = status_str
             logger.info(f"Loaded {len(json_keys)} keys from {args.json_file.name}.")
             if processed_count > 0:
                 logger.info(
@@ -373,6 +432,10 @@ def main() -> None:
                 )
         elif isinstance(json_data, list):
             json_keys = set(json_data)
+            for k in json_data:
+                restart_status_by_rel[k] = "in_json"
+                restart_status_by_rel[k.rstrip("/")] = "in_json"
+                restart_status_by_rel[k.rstrip("/") + "/"] = "in_json"
             logger.info(f"Loaded {len(json_keys)} keys from {args.json_file.name}.")
         else:
             raise ValueError(
@@ -483,6 +546,9 @@ def main() -> None:
     common_argonne_rels = pq_argonne_rels.intersection(xyz_argonne_rels)
     skip_keys = set(args.skip_keys)
     mismatches = 0
+    mismatches_parquet_has_data_xyz_missing = 0
+    mismatches_xyz_has_data_parquet_missing = 0
+    mismatches_value_diff = 0
     checked_props = {
         key: 0
         for key in df.columns
@@ -499,7 +565,17 @@ def main() -> None:
         row = parquet_by_argone_rel[argonne_rel]
         info = xyz_by_argone_rel[argonne_rel].info
 
-        for key, pq_val in row.items():
+        restart_tag = ""
+        if args.json_file is not None:
+            status = restart_status_by_rel.get(argonne_rel)
+            if status is not None:
+                restart_tag = f" [Restart status: {status}]"
+            else:
+                restart_tag = " [Restart status: not_in_json]"
+
+        all_keys = set(row.keys()) | set(info.keys())
+
+        for key in sorted(all_keys):
             if (
                 key in skip_keys
                 or key in ("argonne_rel", "process_time_s")
@@ -507,16 +583,53 @@ def main() -> None:
             ):
                 continue
 
-            if key not in info:
-                logger.error(
-                    f"  [Mismatch] argonne_rel={argonne_rel}: Key '{key}' missing from XYZ `atoms.info`."
-                )
-                mismatches += 1
+            in_pq = key in row
+            pq_val = row[key] if in_pq else None
+            pq_is_null = (not in_pq) or _is_null_or_nan(pq_val)
+
+            in_xyz = key in info
+            xyz_val = info[key] if in_xyz else None
+            xyz_is_null = (not in_xyz) or _is_null_or_nan(xyz_val)
+
+            # 1. Both are null/absent: consistent
+            if pq_is_null and xyz_is_null:
                 continue
 
-            xyz_val = info[key]
+            # 2. Data is present in Parquet, but missing/null in ExtXYZ
+            if not pq_is_null and xyz_is_null:
+                pq_summary = _format_val_summary(pq_val)
+                if not in_xyz:
+                    logger.error(
+                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                        f"Data IS PRESENT in Parquet ({pq_summary}) but key is MISSING from ExtXYZ `atoms.info`.{restart_tag}"
+                    )
+                else:
+                    logger.error(
+                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                        f"Data IS PRESENT in Parquet ({pq_summary}) but ExtXYZ `atoms.info` is NaN/None.{restart_tag}"
+                    )
+                mismatches += 1
+                mismatches_parquet_has_data_xyz_missing += 1
+                continue
 
-            # Unwrap 0-d arrays if any
+            # 3. Data is present in ExtXYZ, but missing/null in Parquet
+            if pq_is_null and not xyz_is_null:
+                xyz_summary = _format_val_summary(xyz_val)
+                if not in_pq:
+                    logger.error(
+                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                        f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but key is MISSING from Parquet columns.{restart_tag}"
+                    )
+                else:
+                    logger.error(
+                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                        f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but Parquet is NaN/None.{restart_tag}"
+                    )
+                mismatches += 1
+                mismatches_xyz_has_data_parquet_missing += 1
+                continue
+
+            # 4. Both have non-null data: compare values
             if isinstance(pq_val, np.ndarray) and pq_val.ndim == 0:
                 pq_val = pq_val.item()
             if isinstance(xyz_val, np.ndarray) and xyz_val.ndim == 0:
@@ -529,73 +642,70 @@ def main() -> None:
                 if not (is_pq_seq and is_xyz_seq):
                     logger.error(
                         f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Sequence type mismatch: Parquet={type(pq_val).__name__} != XYZ={type(xyz_val).__name__}"
+                        f"Sequence type mismatch: Parquet={type(pq_val).__name__} != XYZ={type(xyz_val).__name__}.{restart_tag}"
                     )
                     mismatches += 1
+                    mismatches_value_diff += 1
                 else:
                     pq_arr = _to_clean_array(pq_val)
                     xyz_arr = _to_clean_array(xyz_val)
                     if pq_arr.shape != xyz_arr.shape:
                         logger.error(
                             f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                            f"Array shape mismatch: Parquet shape {pq_arr.shape} != XYZ shape {xyz_arr.shape}"
+                            f"Array shape mismatch: Parquet shape {pq_arr.shape} != XYZ shape {xyz_arr.shape}.{restart_tag}"
                         )
                         mismatches += 1
+                        mismatches_value_diff += 1
                     elif np.issubdtype(pq_arr.dtype, np.number) and np.issubdtype(xyz_arr.dtype, np.number):
                         if not np.allclose(pq_arr, xyz_arr, rtol=1e-9, atol=1e-12, equal_nan=True):
                             logger.error(
                                 f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"NDArray mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                                f"NDArray mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
                             )
                             mismatches += 1
+                            mismatches_value_diff += 1
                     else:
                         if not np.array_equal(pq_arr, xyz_arr):
                             logger.error(
                                 f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"List/Array mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                                f"List/Array mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
                             )
                             mismatches += 1
+                            mismatches_value_diff += 1
             else:
-                pq_is_nan = pq_val is None or (
-                    isinstance(pq_val, (float, np.floating)) and math.isnan(pq_val)
-                ) or (isinstance(pq_val, type(pd.NA)) and pq_val is pd.NA)
-                xyz_is_nan = xyz_val is None or (
-                    isinstance(xyz_val, (float, np.floating)) and math.isnan(xyz_val)
-                ) or (isinstance(xyz_val, type(pd.NA)) and xyz_val is pd.NA)
-
-                if pq_is_nan or xyz_is_nan:
-                    if not (pq_is_nan and xyz_is_nan):
-                        logger.error(
-                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet is NaN/None but XYZ has {xyz_val!r}"
-                            if pq_is_nan
-                            else f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: XYZ is NaN/None but Parquet has {pq_val!r}"
-                        )
-                        mismatches += 1
-                elif isinstance(pq_val, (bool, np.bool_)) or isinstance(xyz_val, (bool, np.bool_)):
+                if isinstance(pq_val, (bool, np.bool_)) or isinstance(xyz_val, (bool, np.bool_)):
                     if not (isinstance(pq_val, (bool, np.bool_)) and isinstance(xyz_val, (bool, np.bool_))) or bool(pq_val) != bool(xyz_val):
                         logger.error(
-                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Boolean mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
                         )
                         mismatches += 1
+                        mismatches_value_diff += 1
                 elif isinstance(pq_val, (int, float, np.number)) and isinstance(xyz_val, (int, float, np.number)):
                     if isinstance(pq_val, (float, np.floating)) or isinstance(xyz_val, (float, np.floating)):
                         if not math.isclose(float(pq_val), float(xyz_val), rel_tol=1e-9, abs_tol=1e-12):
                             logger.error(
-                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(float(pq_val) - float(xyz_val))})"
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                f"Numeric mismatch: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(float(pq_val) - float(xyz_val))}).{restart_tag}"
                             )
                             mismatches += 1
+                            mismatches_value_diff += 1
                     else:
                         if pq_val != xyz_val:
                             logger.error(
-                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                f"Integer mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
                             )
                             mismatches += 1
+                            mismatches_value_diff += 1
                 else:
                     if pq_val != xyz_val:
                         logger.error(
-                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: Parquet={pq_val!r} != XYZ={xyz_val!r}"
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Value mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
                         )
                         mismatches += 1
+                        mismatches_value_diff += 1
 
             if key in checked_props:
                 checked_props[key] += 1
@@ -608,6 +718,18 @@ def main() -> None:
         logger.error(
             f"\n❌ Verification Failed. Encountered {mismatches} property inconsistencies."
         )
+        if mismatches_parquet_has_data_xyz_missing > 0:
+            logger.error(
+                f"   - {mismatches_parquet_has_data_xyz_missing} property instances: data present in Parquet but missing from ExtXYZ `atoms.info`."
+            )
+        if mismatches_xyz_has_data_parquet_missing > 0:
+            logger.error(
+                f"   - {mismatches_xyz_has_data_parquet_missing} property instances: data present in ExtXYZ `atoms.info` but missing from Parquet."
+            )
+        if mismatches_value_diff > 0:
+            logger.error(
+                f"   - {mismatches_value_diff} property instances: values differ between Parquet and ExtXYZ."
+            )
 
 
 if __name__ == "__main__":

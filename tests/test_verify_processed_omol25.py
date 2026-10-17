@@ -566,4 +566,131 @@ def test_verify_same_sha_same_species_same_charge_confirmed_duplicate(tmp_path):
     assert len(dup_data["confirmed_duplicates"]["sha_duplicate"]) == 2
 
 
+def test_verify_parquet_has_data_xyz_missing_with_restart_status(tmp_path):
+    pq_file = tmp_path / "test_data_in_pq.parquet"
+    xyz_file = tmp_path / "test_data_in_pq.xyz"
+    json_file = tmp_path / "test_data_in_pq_restart.json"
+
+    json_data = {
+        "rgd_uks/mol_1/": {"processed": True, "key": "orca.tar.zst"}
+    }
+    json_file.write_text(json.dumps(json_data))
+
+    df = pd.DataFrame(
+        [
+            {
+                "geom_sha1": "sha_1",
+                "argonne_rel": "rgd_uks/mol_1/",
+                "spin_quadrupole_traceless": [[1.0, 0.0, 0.0], [0.0, -0.5, 0.0], [0.0, 0.0, -0.5]],
+            }
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "sha_1"
+    a1.info["argonne_rel"] = "rgd_uks/mol_1/"
+    # ExtXYZ is missing spin_quadrupole_traceless
+    write(str(xyz_file), [a1], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+        "--json",
+        str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Data IS PRESENT in Parquet" in res.stdout
+    assert "spin_quadrupole_traceless" in res.stdout
+    assert "key is MISSING from ExtXYZ `atoms.info`" in res.stdout
+    assert "[Restart status: processed=True]" in res.stdout
+    assert "data present in Parquet but missing from ExtXYZ `atoms.info`" in res.stdout
+
+
+def test_verify_parquet_nan_xyz_missing_is_not_mismatch(tmp_path):
+    pq_file = tmp_path / "test_null_match.parquet"
+    xyz_file = tmp_path / "test_null_match.xyz"
+
+    # Mol 1 has spin_quadrupole_traceless, Mol 2 does not (NaN in Parquet)
+    df = pd.DataFrame(
+        [
+            {
+                "geom_sha1": "sha_1",
+                "argonne_rel": "mol_1",
+                "test_energy": -10.0,
+                "spin_quadrupole_traceless": [[1.0, 0.0], [0.0, 1.0]],
+            },
+            {
+                "geom_sha1": "sha_2",
+                "argonne_rel": "mol_2",
+                "test_energy": -20.0,
+                "spin_quadrupole_traceless": None,  # NaN in Parquet
+            },
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "sha_1"
+    a1.info["argonne_rel"] = "mol_1"
+    a1.info["test_energy"] = -10.0
+    a1.info["spin_quadrupole_traceless"] = np.array([[1.0, 0.0], [0.0, 1.0]])
+
+    a2 = Atoms("O2", positions=[(0, 0, 0), (0, 0, 1.2)])
+    a2.info["geom_sha1"] = "sha_2"
+    a2.info["argonne_rel"] = "mol_2"
+    a2.info["test_energy"] = -20.0
+    # a2 has no spin_quadrupole_traceless in info
+
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "Data Consistency Verified" in res.stdout
+    assert "0 mismatches" in res.stdout
+
+
+def test_verify_xyz_has_data_parquet_missing(tmp_path):
+    pq_file = tmp_path / "test_xyz_extra.parquet"
+    xyz_file = tmp_path / "test_xyz_extra.xyz"
+
+    df = pd.DataFrame(
+        [
+            {
+                "geom_sha1": "sha_1",
+                "argonne_rel": "mol_1",
+            }
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "sha_1"
+    a1.info["argonne_rel"] = "mol_1"
+    a1.info["extra_property"] = 42.0
+    write(str(xyz_file), [a1], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Data IS PRESENT in ExtXYZ `atoms.info`" in res.stdout
+    assert "extra_property" in res.stdout
+    assert "key is MISSING from Parquet columns" in res.stdout
+
+
 

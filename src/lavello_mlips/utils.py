@@ -1,5 +1,6 @@
 from io import BytesIO
 import logging
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -130,4 +131,38 @@ def extract_gbw_from_path(gbw_path: Path) -> Optional[bytes]:
         if cand.is_file():
             return extract_gbw_bytes(cand.read_bytes())
     return None
+
+
+def get_shm_temp_dir() -> Optional[str]:
+    """Return '/dev/shm' if it exists and is writable, otherwise None."""
+    shm = Path("/dev/shm")
+    if shm.is_dir() and os.access(shm, os.W_OK):
+        return "/dev/shm"
+    return None
+
+
+def get_unique_temp_prefix(base: str = "temp", rank: Optional[int] = None) -> str:
+    """Generate a unique temporary directory/file prefix including MPI rank and process ID."""
+    if rank is None:
+        try:
+            from mpi4py import MPI
+            if MPI.Is_initialized():
+                rank = MPI.COMM_WORLD.Get_rank()
+        except Exception:
+            pass
+    if rank is None:
+        for env_var in ("OMPI_COMM_WORLD_RANK", "PMI_RANK", "SLURM_PROCID"):
+            val = os.environ.get(env_var)
+            if val is not None:
+                try:
+                    rank = int(val)
+                    break
+                except ValueError:
+                    pass
+    pid = os.getpid()
+    if rank is not None:
+        return f"{base}_rank{rank}_pid{pid}_"
+    return f"{base}_pid{pid}_"
+
+
 

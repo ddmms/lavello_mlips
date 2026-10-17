@@ -386,3 +386,81 @@ def test_download_keeps_archive_and_extracted_files(tmp_path, monkeypatch):
     assert (out_folder / "orca.inp").read_text() == "INPUT DATA"
     assert (out_folder / "orca.gbw").exists()
     assert (out_folder / "orca.gbw").read_bytes() == b"RAW_GBW_DATA"
+
+
+def test_download_marks_processed_false_on_transfer_failure(tmp_path, monkeypatch):
+    """Test that if any file fails to transfer, record is marked processed=False."""
+    local_data_dir = tmp_path / "mock_s3"
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+
+    prefix = "mol_partial_fail/"
+    mock_files = {"orca.out": "LOG DATA"}
+    create_mock_tar_zst(local_data_dir / prefix / "orca.tar.zst", mock_files)
+    # The second key is missing on disk!
+
+    data_source = {
+        prefix: {
+            "key": ["orca.tar.zst", "missing_file.tar.zst"],
+            "processed": True,  # was initially True or set in restart
+        }
+    }
+    data_source_json = tmp_path / "data_source.json"
+    data_source_json.write_text(json.dumps(data_source))
+
+    test_args = [
+        "download_omol25",
+        "--data-source",
+        str(data_source_json),
+        "--local-dir",
+        str(local_data_dir),
+    ]
+
+    monkeypatch.chdir(dest_dir)
+    with patch.object(sys, "argv", test_args):
+        download_main()
+
+    restart_file = data_source_json.with_name(data_source_json.stem + "_restart.json")
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data[prefix]["processed"] is False
+
+
+def test_manager_loop_handles_failure_tuple(tmp_path):
+    """Test that manager_loop marks processed=False when worker sends (key, False)."""
+    comm = MagicMock()
+    status = MagicMock()
+    status.Get_source.return_value = 1
+
+    # Worker sends READY, then sends failure tuple ("mol_fail/", False), then READY, then exits
+    comm.recv.side_effect = ["READY", ("mol_fail/", False), "READY"]
+
+    keys = ["mol_fail/"]
+    data = {"mol_fail/": {"processed": True}}
+    restart_file = tmp_path / "restart_mpi_fail.json"
+
+    with patch("lavello_mlips.download_omol25.MPI.Status", return_value=status), \
+         patch("lavello_mlips.download_omol25.tqdm", return_value=MagicMock()):
+        manager_loop(keys, data, restart_file, comm, size=2)
+
+    assert data["mol_fail/"]["processed"] is False
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data["mol_fail/"]["processed"] is False
+
+
+def test_worker_loop_sends_failure_tuple():
+    """Test worker_loop sends (key, False) when process_prefix fails."""
+    comm = MagicMock()
+    comm.recv.side_effect = ["mol_fail/", None]
+
+    class MockArgs:
+        local_dir = "/tmp"
+        login_file = None
+
+    with patch("lavello_mlips.download_omol25.process_prefix", return_value=None):
+        worker_loop({}, MockArgs(), comm)
+
+    # Worker sends: READY, ("mol_fail/", False), READY
+    assert comm.send.call_args_list[1][0][0] == ("mol_fail/", False)
+

@@ -6,10 +6,11 @@ import re
 import subprocess
 import sys
 import tarfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from ase import Atoms
 import ase.io
+import numpy as np
 import pandas as pd
 from zstandard import ZstdCompressor
 
@@ -984,3 +985,238 @@ raise RuntimeError('Fatal worker error simulated')
     content = log_file.read_text(encoding="utf-8")
     assert "Fatal worker error simulated" in content
     assert "CRITICAL" in content
+
+
+def test_process_single_sets_processed_false_on_missing_file(tmp_path):
+    """Test process_single sets processed=False when local file is missing."""
+    prefix_json = tmp_path / "test_missing.json"
+    prefix = "mol_missing/"
+    data = {prefix: {"key": "orca.tar.zst", "processed": False}}
+    prefix_json.write_text(json.dumps(data))
+
+    class MockArgs:
+        data_source = prefix_json
+        output_dir = tmp_path / "out"
+        bucket = "mock-bucket"
+        local_dir = tmp_path / "data"  # empty dir
+        login_file = None
+        sample_size = -1
+        batch_size = 10
+        start_index = 0
+        restart = False
+        memory_threshold_gb = 1.0
+
+    MockArgs.local_dir.mkdir(parents=True, exist_ok=True)
+    MockArgs.output_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(MockArgs(), rank=0, size=1, comm=None)
+        processor.data[prefix]["processed"] = True
+        res = processor.process_single(0)
+        assert res is None
+        assert processor.data[prefix]["processed"] is False
+
+
+def test_process_single_sets_processed_false_on_secondary_key_transfer_failure(tmp_path):
+    """Test process_single sets processed=False when a secondary key in key_list fails to transfer."""
+    local_data_dir = tmp_path / "data"
+    prefix_json = tmp_path / "test_partial.json"
+    prefix = "mol_partial/"
+    # Key list includes orca.tar.zst and orca.gbw, but orca.gbw is missing
+    data = {prefix: {"key": ["orca.tar.zst", "orca.gbw.zstd0"], "processed": False}}
+    prefix_json.write_text(json.dumps(data))
+
+    create_mock_data(local_data_dir, prefix_json)
+    # Delete the secondary key to simulate transfer failure
+    gbw_path = local_data_dir / prefix / "orca.gbw.zstd0"
+    if gbw_path.exists():
+        gbw_path.unlink()
+
+    class MockArgs:
+        data_source = prefix_json
+        output_dir = tmp_path / "out"
+        bucket = "mock-bucket"
+        local_dir = local_data_dir
+        login_file = None
+        sample_size = -1
+        batch_size = 10
+        start_index = 0
+        restart = False
+        memory_threshold_gb = 1.0
+
+    MockArgs.output_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(MockArgs(), rank=0, size=1, comm=None)
+        processor.data[prefix]["processed"] = True
+        res = processor.process_single(0)
+        assert res is None
+        assert processor.data[prefix]["processed"] is False
+
+
+def test_process_single_sets_processed_false_on_s3_error(tmp_path):
+    """Test process_single sets processed=False on S3 get_object failure."""
+    prefix_json = tmp_path / "test_s3_err.json"
+    prefix = "mol_s3_err/"
+    data = {prefix: {"key": "orca.tar.zst", "processed": False}}
+    prefix_json.write_text(json.dumps(data))
+
+    class MockArgs:
+        data_source = prefix_json
+        output_dir = tmp_path / "out"
+        bucket = "mock-bucket"
+        local_dir = None
+        login_file = None
+        sample_size = -1
+        batch_size = 10
+        start_index = 0
+        restart = False
+        memory_threshold_gb = 1.0
+
+    MockArgs.output_dir.mkdir(parents=True, exist_ok=True)
+
+    mock_s3 = MagicMock()
+    mock_s3.get_object.side_effect = Exception("S3 Connection Dropped")
+
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=mock_s3):
+        processor = OmolDataProcessor(MockArgs(), rank=0, size=1, comm=None)
+        processor.data[prefix]["processed"] = True
+        res = processor.process_single(0, s3_client=mock_s3)
+        assert res is None
+        assert processor.data[prefix]["processed"] is False
+
+
+def test_serial_marks_failed_record_processed_false_in_restart(tmp_path):
+    """Test that serial execution marks failed records as processed=False in restart file."""
+    prefix_json = tmp_path / "test_serial_fail.json"
+    prefix = "mol_serial_fail/"
+    data = {prefix: {"key": "missing.tar.zst", "processed": False}}
+    prefix_json.write_text(json.dumps(data))
+
+    class MockArgs:
+        data_source = prefix_json
+        output_dir = tmp_path / "out"
+        bucket = "mock-bucket"
+        local_dir = tmp_path / "empty_dir"
+        login_file = None
+        sample_size = -1
+        batch_size = 10
+        start_index = 0
+        restart = False
+        mpi = False
+        memory_threshold_gb = 1.0
+
+    MockArgs.local_dir.mkdir(parents=True, exist_ok=True)
+    MockArgs.output_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(MockArgs(), rank=0, size=1, comm=None)
+        processor.data[prefix]["processed"] = True
+        processor.run_serial()
+
+    restart_file = prefix_json.with_name(prefix_json.stem + "_restart.json")
+    with open(restart_file, "r") as f:
+        restart_data = json.load(f)
+    assert restart_data[prefix]["processed"] is False
+
+
+
+def test_integrals_from_orca_2json_cleans_up_shm_tempdir(tmp_path, monkeypatch):
+    """Test that temporary files for orca_2json are created in /dev/shm (or mock) and deleted when done."""
+    from lavello_mlips.process_omol25 import _integrals_from_orca_2json
+
+    mock_shm = tmp_path / "dev_shm"
+    mock_shm.mkdir()
+
+    # Point get_shm_temp_dir to mock_shm
+    monkeypatch.setattr("lavello_mlips.process_omol25.get_shm_temp_dir", lambda: str(mock_shm))
+
+    created_dirs = []
+
+    def mock_subprocess_run(cmd, cwd, capture_output, text):
+        created_dirs.append(Path(cwd))
+        # Ensure temporary files exist inside cwd while subprocess runs
+        assert (Path(cwd) / "orca.gbw").exists()
+        assert (Path(cwd) / "orca.SHARKINP.tmp").exists()
+        assert (Path(cwd) / "orca.json.conf").exists()
+        # Verify that cwd is indeed located within mock_shm
+        assert str(mock_shm) in cwd
+
+        # Simulate orca_2json creating orca.json
+        payload = {
+            "Molecule": {
+                "S-Matrix": [[1.0]],
+                "dipole": [[[0.0]], [[0.0]], [[0.0]]],
+                "quadrupole": [[[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]]],
+            }
+        }
+        (Path(cwd) / "orca.json").write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    # Dummy 1-atom setup with mock pointers
+    import struct
+    dummy_gbw = bytearray(b"\x00" * 2048)
+    struct.pack_into("<q", dummy_gbw, 0, 16)  # calculation path at offset 16
+
+    atoms = [(1, np.array([0.0, 0.0, 0.0]))]
+    shells = [(0, 0, 0, np.array([1.0]), np.array([1.0]))]
+
+    with patch("lavello_mlips.process_omol25._orca_2json_executable", return_value="orca_2json"), \
+         patch("subprocess.run", side_effect=mock_subprocess_run):
+        overlap, dipole, quadrupole = _integrals_from_orca_2json(bytes(dummy_gbw), atoms, shells)
+
+    assert overlap.shape == (1, 1)
+    assert len(created_dirs) == 1
+    # Verify that the temporary directory was completely deleted after processing!
+    assert not created_dirs[0].exists()
+
+
+def test_unique_temp_prefix_mpi(tmp_path, monkeypatch):
+    """Test that temporary prefixes in /dev/shm are unique per rank and process."""
+    import os
+    from lavello_mlips.utils import get_unique_temp_prefix
+    from lavello_mlips.process_omol25 import _integrals_from_orca_2json
+
+    pid = os.getpid()
+    prefix_0 = get_unique_temp_prefix("orca2json", rank=0)
+    prefix_1 = get_unique_temp_prefix("orca2json", rank=1)
+    prefix_2 = get_unique_temp_prefix("orca2json", rank=2)
+
+    assert prefix_0 == f"orca2json_rank0_pid{pid}_"
+    assert prefix_1 == f"orca2json_rank1_pid{pid}_"
+    assert prefix_2 == f"orca2json_rank2_pid{pid}_"
+    assert prefix_0 != prefix_1 != prefix_2
+
+    mock_shm = tmp_path / "dev_shm"
+    mock_shm.mkdir()
+    monkeypatch.setattr("lavello_mlips.process_omol25.get_shm_temp_dir", lambda: str(mock_shm))
+
+    created_dir_name = []
+
+    def mock_subprocess_run(cmd, cwd, capture_output, text):
+        dir_name = Path(cwd).name
+        created_dir_name.append(dir_name)
+        payload = {
+            "Molecule": {
+                "S-Matrix": [[1.0]],
+                "dipole": [[[0.0]], [[0.0]], [[0.0]]],
+                "quadrupole": [[[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]]],
+            }
+        }
+        (Path(cwd) / "orca.json").write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    import struct
+    dummy_gbw = bytearray(b"\x00" * 2048)
+    struct.pack_into("<q", dummy_gbw, 0, 16)
+    atoms = [(1, np.array([0.0, 0.0, 0.0]))]
+    shells = [(0, 0, 0, np.array([1.0]), np.array([1.0]))]
+
+    with patch("lavello_mlips.process_omol25._orca_2json_executable", return_value="orca_2json"), \
+         patch("subprocess.run", side_effect=mock_subprocess_run):
+        _integrals_from_orca_2json(bytes(dummy_gbw), atoms, shells, rank=3)
+
+    assert len(created_dir_name) == 1
+    assert created_dir_name[0].startswith(f"orca2json_rank3_pid{pid}_")
+
+

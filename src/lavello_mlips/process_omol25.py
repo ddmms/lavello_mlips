@@ -25,7 +25,18 @@ from zstandard import ZstdDecompressor
 
 import ase.parallel
 from .s3_processor import S3DataProcessor
-from .utils import json_load, json_dump, extract_gbw_bytes, extract_gbw_from_path
+from .utils import (
+    json_load,
+    json_dump,
+    extract_gbw_bytes,
+    extract_gbw_from_path,
+    get_shm_temp_dir,
+    get_unique_temp_prefix,
+)
+
+_shm_temp = get_shm_temp_dir()
+if _shm_temp:
+    tempfile.tempdir = _shm_temp
 
 ase.parallel.world = ase.parallel.DummyMPI()
 
@@ -267,10 +278,13 @@ def _retarget_gbw_basename(gbw: bytes, basename: str) -> bytes:
     return bytes(rewritten)
 
 
-def _integrals_from_orca_2json(gbw: bytes, atoms, shells):
+def _integrals_from_orca_2json(gbw: bytes, atoms, shells, rank: Optional[int] = None):
     """Overlap, dipole, and quadrupole integrals in the GBW's own AO basis."""
     executable = _orca_2json_executable()
-    with tempfile.TemporaryDirectory(prefix="orca2json_") as directory:
+    temp_parent = get_shm_temp_dir()
+    temp_prefix = get_unique_temp_prefix("orca2json", rank=rank)
+    directory = tempfile.mkdtemp(prefix=temp_prefix, dir=temp_parent)
+    try:
         base = str(Path(directory) / "orca")
         Path(base + ".gbw").write_bytes(_retarget_gbw_basename(gbw, base))
         Path(base + ".SHARKINP.tmp").write_text(_sharkinp_text(atoms, shells))
@@ -294,6 +308,8 @@ def _integrals_from_orca_2json(gbw: bytes, atoms, shells):
         if completed.stderr and completed.stderr.strip():
             logger.warning("orca_2json warning: %s", completed.stderr.strip())
         payload = json.loads(Path(base + ".json").read_text())
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
     molecule = payload["Molecule"]
     overlap = np.asarray(molecule["S-Matrix"], dtype=np.float64)
     dipole = np.asarray(molecule["dipole"], dtype=np.float64)
@@ -320,7 +336,9 @@ def _unpack_triangular(values: np.ndarray, nao: int) -> np.ndarray:
     return matrix
 
 
-def spin_multipoles_from_orca(gbw: bytes, density_npz: bytes) -> Dict[str, Any]:
+def spin_multipoles_from_orca(
+    gbw: bytes, density_npz: bytes, rank: Optional[int] = None
+) -> Dict[str, Any]:
     """Spin dipole and traceless spin quadrupole at the coordinate origin.
 
     Overlap and multipole integrals come from ``orca_2json`` in the GBW AO
@@ -332,7 +350,7 @@ def spin_multipoles_from_orca(gbw: bytes, density_npz: bytes) -> Dict[str, Any]:
     geometry_offset, basis_offset = _gbw_pointers(gbw)
     atoms = _gbw_geometry(gbw, geometry_offset)
     shells = _gbw_shells(gbw, basis_offset, len(atoms))
-    overlap, dipole, quadrupole6 = _integrals_from_orca_2json(gbw, atoms, shells)
+    overlap, dipole, quadrupole6 = _integrals_from_orca_2json(gbw, atoms, shells, rank=rank)
     nao = overlap.shape[0]
 
     with np.load(BytesIO(density_npz)) as packed:
@@ -364,6 +382,7 @@ def _attach_spin_multipoles(
     gbw: Optional[bytes],
     density_npz: Optional[bytes],
     structure_id: Optional[str] = None,
+    rank: Optional[int] = None,
 ) -> None:
     if not gbw or not density_npz:
         rec["status_spin_multipole"] = "MISSING"
@@ -374,7 +393,7 @@ def _attach_spin_multipoles(
         rec["status_spin_multipole"] = "NO_CHARGE"
         return
     try:
-        rec.update(spin_multipoles_from_orca(gbw, density_npz))
+        rec.update(spin_multipoles_from_orca(gbw, density_npz, rank=rank))
     except Exception as exc:
         logger.error("Spin multipole failed for %s: %s", ident, exc, exc_info=True)
         rec["status_spin_multipole"] = "ERROR"
@@ -551,6 +570,7 @@ def build_orca_record(
     gbw: Optional[bytes],
     density: Optional[bytes],
     structure_id: Optional[str] = None,
+    rank: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Any]:
     """Parse one ORCA calculation, including spin multipoles when a GBW and density exist."""
     rec: Dict[str, Any] = {}
@@ -682,7 +702,7 @@ def build_orca_record(
     else:
         rec["status_eigs"] = "MISSING"
 
-    _attach_spin_multipoles(rec, gbw, density, structure_id=structure_id)
+    _attach_spin_multipoles(rec, gbw, density, structure_id=structure_id, rank=rank)
 
     for k, v in rec.items():
         if v is not None:
@@ -1064,7 +1084,15 @@ class OmolDataProcessor(S3DataProcessor):
                                     density = f.read()
                                     break
 
-            return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density, structure_id=x)
+            return build_orca_record(
+                txt_out,
+                txt_prop,
+                txt_inp,
+                gbw,
+                density,
+                structure_id=x,
+                rank=getattr(self, "rank", None),
+            )
         except Exception as e:
             logger.error(f"Error parsing buffer for {x}: {e}", exc_info=True)
             return None
@@ -1088,15 +1116,24 @@ class OmolDataProcessor(S3DataProcessor):
                 local_path = self.local_dir / source
                 if not local_path.exists():
                     logger.warning(f"Local file '{local_path}' not found. Skipping.")
+                    if x in self.data:
+                        self.data[x]["processed"] = False
                     return None
                 content = local_path.read_bytes()
                 buffer.write(content)
             else:
-                response = s3_client.get_object(Bucket=self.args.bucket, Key=source)
-                buffer.write(response["Body"].read())
+                try:
+                    response = s3_client.get_object(Bucket=self.args.bucket, Key=source)
+                    buffer.write(response["Body"].read())
+                except Exception as e_s3:
+                    logger.error(f"S3 get_object error for {source}: {e_s3}")
+                    if x in self.data:
+                        self.data[x]["processed"] = False
+                    return None
 
             gbw_extra = None
             density_extra = None
+            transfer_failed = False
 
             # Check if orca.gbw/orca.gbw.zstd0 or density_mat.npz are present as separate keys
             for k in key_list:
@@ -1111,11 +1148,15 @@ class OmolDataProcessor(S3DataProcessor):
                                 p = self.local_dir / (x + k)
                                 if p.exists():
                                     gbw_extra = extract_gbw_bytes(p.read_bytes())
+                                else:
+                                    logger.warning(f"Local GBW file '{p}' not found for {x}.")
+                                    transfer_failed = True
                         elif s3_client:
                             resp = s3_client.get_object(Bucket=self.args.bucket, Key=x + k)
                             gbw_extra = extract_gbw_bytes(resp["Body"].read())
                     except Exception as e_gbw:
                         logger.warning(f"Failed to fetch/extract GBW for {x}: {e_gbw}")
+                        transfer_failed = True
                 elif "density_mat.npz" in k_name:
                     try:
                         if self.local_dir:
@@ -1124,11 +1165,21 @@ class OmolDataProcessor(S3DataProcessor):
                                 p = self.local_dir / x / "density_mat.npz"
                             if p.exists():
                                 density_extra = p.read_bytes()
+                            else:
+                                logger.warning(f"Local density_mat file '{p}' not found for {x}.")
+                                transfer_failed = True
                         elif s3_client:
                             resp = s3_client.get_object(Bucket=self.args.bucket, Key=x + k)
                             density_extra = resp["Body"].read()
                     except Exception as e_dens:
                         logger.warning(f"Failed to fetch density_mat for {x}: {e_dens}")
+                        transfer_failed = True
+
+            if transfer_failed:
+                logger.error(f"Transfer failure for one or more files in {x}. Marking processed=False.")
+                if x in self.data:
+                    self.data[x]["processed"] = False
+                return None
 
             # If local_dir was provided, also check if orca.gbw exists on disk even if not in key_list
             if self.local_dir and gbw_extra is None:
@@ -1141,6 +1192,8 @@ class OmolDataProcessor(S3DataProcessor):
             buffer.seek(0)
             result = self._process_buffer(buffer, x, gbw_extra=gbw_extra, density_extra=density_extra)
             if result is None:
+                if x in self.data:
+                    self.data[x]["processed"] = False
                 return None
             parsed_rec, atoms = result
             rec.update(parsed_rec)
@@ -1152,7 +1205,10 @@ class OmolDataProcessor(S3DataProcessor):
             return rec, atoms, x
         except Exception as e:
             logger.error(f"Error processing {source}: {e}", exc_info=True)
+            if x in self.data:
+                self.data[x]["processed"] = False
             return None
+
 
     def _manager_loop(self) -> None:
         """Rank 0 Result Collector loop (Hybrid RMA)."""
@@ -1177,6 +1233,8 @@ class OmolDataProcessor(S3DataProcessor):
                 rec, x = msg
                 if rec is not None and x in self.data:
                     self.data[x]["processed"] = True
+                elif x in self.data:
+                    self.data[x]["processed"] = False
                 # Always advance the progress bar, even on failure
                 processed_count += 1
                 pbar.update(1)
@@ -1513,6 +1571,10 @@ class OmolDataProcessor(S3DataProcessor):
                         self.flush_recs(recs, all_atoms)
                         recs = []
                         all_atoms = []
+                else:
+                    x = self.prefixes[idx]
+                    if x in self.data:
+                        self.data[x]["processed"] = False
 
             if recs:
                 self.flush_recs(recs, all_atoms)

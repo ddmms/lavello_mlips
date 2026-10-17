@@ -9,10 +9,15 @@ from zstandard import ZstdDecompressor
 import boto3
 from botocore.config import Config
 from tqdm import tqdm
+import tempfile
 import time
 
-from .utils import setup_logging, json_load, json_dump, extract_gbw_bytes
+from .utils import setup_logging, json_load, json_dump, extract_gbw_bytes, get_shm_temp_dir
 from mpi4py import MPI
+
+_shm_temp = get_shm_temp_dir()
+if _shm_temp:
+    tempfile.tempdir = _shm_temp
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +100,14 @@ def process_prefix(x: str, data: Dict[str, Any], args: argparse.Namespace, s3_cl
             logger.error(f"Error processing {source}: {e}")
             success = False
 
-    return x if success else None
+    if not success:
+        if x in data:
+            data[x]["processed"] = False
+        return None
+
+    if x in data:
+        data[x]["processed"] = True
+    return x
 
 
 def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
@@ -183,8 +195,19 @@ def manager_loop(keys: List[str], data: Dict[str, Any], restart_file: Union[str,
             else:
                 comm.send(None, dest=source)
                 active_workers -= 1
-        elif isinstance(msg, str):  # prefix (success)
-            data[msg]["processed"] = True
+        elif isinstance(msg, tuple):  # (key, success)
+            key, success = msg
+            if key in data:
+                data[key]["processed"] = bool(success)
+            processed_count += 1
+            pbar.update(1)
+
+            if processed_count % 100 == 0:
+                with open(restart_file, "w") as f:
+                    json_dump(data, f, indent=4)
+        elif isinstance(msg, str):  # prefix (legacy string success)
+            if msg in data:
+                data[msg]["processed"] = True
             processed_count += 1
             pbar.update(1)
 
@@ -221,8 +244,7 @@ def worker_loop(data: Dict[str, Any], args: argparse.Namespace, comm: Any) -> No
                 break
 
             res = process_prefix(key, data, args, s3_client)
-            if res:
-                comm.send(res, dest=0)
+            comm.send((key, bool(res)), dest=0)
     finally:
         pass
 
@@ -247,10 +269,13 @@ def download_serial(keys: List[str], data: Dict[str, Any], args: argparse.Namesp
             res = process_prefix(x, data, args, s3_client)
             if res:
                 data[res]["processed"] = True
+            else:
+                data[x]["processed"] = False
 
         logger.info(f"Download complete in {time.time() - start_time:.2f} seconds.")
     finally:
         pass
+
 
 
 def main() -> None:
