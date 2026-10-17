@@ -6,10 +6,14 @@ import re
 import subprocess
 import sys
 import tarfile
+from unittest.mock import patch
 
+from ase import Atoms
 import ase.io
 import pandas as pd
 from zstandard import ZstdCompressor
+
+from lavello_mlips.process_omol25 import OmolDataProcessor
 
 
 def create_mock_data(local_dir: Path, data_source: Path):
@@ -115,7 +119,7 @@ def test_lavello_mlips_mpi():
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    #assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert result.returncode == 0, f"Command failed with {result.returncode}.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
 
     expected_out = out_dir / "props_test_noble_gas.parquet"
     assert expected_out.exists()
@@ -456,7 +460,7 @@ def test_restart_5ranks_matches_serial():
     with open(data_source) as f:
         n_total = len(json.load(f))
     half = n_total // 2  # first MPI pass processes this many
-    rest = n_total - half  # second MPI pass (restart) picks up the remainder
+    _rest = n_total - half  # second MPI pass (restart) picks up the remainder
 
     # ======================================================
     # 1. Serial run – ground truth
@@ -635,3 +639,175 @@ def test_download_omol25_mpi():
             d.rmdir()
     test_data_source.unlink(missing_ok=True)
     restart_file.unlink(missing_ok=True)
+
+
+def test_final_merge_corrupt_part_file_resets_restart_json(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    data_source = tmp_path / "merge_test_prefix.json"
+    restart_file = tmp_path / "merge_test_prefix_restart.json"
+
+    data = {
+        "struct_1": {"key": "s1.tar.zst", "processed": True},
+        "struct_2": {"key": "s2.tar.zst", "processed": True},
+        "struct_3": {"key": "s3.tar.zst", "processed": True},
+    }
+    with open(data_source, "w") as f:
+        json.dump(data, f)
+
+    class MockArgs:
+        def __init__(self):
+            self.data_source = data_source
+            self.output_dir = output_dir
+            self.bucket = None
+            self.local_dir = None
+            self.login_file = None
+            self.sample_size = -1
+            self.batch_size = 100
+            self.start_index = 0
+            self.restart = False
+            self.mpi = False
+            self.memory_threshold_gb = 10.0
+
+    args = MockArgs()
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(args, rank=0, size=1, comm=None)
+
+    with open(restart_file, "w") as f:
+        json.dump(data, f)
+
+    df0 = pd.DataFrame([
+        {"argonne_rel": "struct_1", "data_id": 1, "energy": -1.0},
+        {"argonne_rel": "struct_2", "data_id": 2, "energy": -2.0},
+    ])
+    df0.to_parquet(output_dir / "props_merge_test_0_part_0.parquet", index=False)
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at1.info = {"argonne_rel": "struct_1", "data_id": 1}
+    at2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at2.info = {"argonne_rel": "struct_2", "data_id": 2}
+    ase.io.write(str(output_dir / "structs_merge_test_0_part_0.xyz"), [at1, at2], format="extxyz")
+
+    corrupt_pq = output_dir / "props_merge_test_1_part_0.parquet"
+    corrupt_pq.write_bytes(b"corrupt parquet bytes")
+    at3 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.76]])
+    at3.info = {"argonne_rel": "struct_3", "data_id": 3}
+    ase.io.write(str(output_dir / "structs_merge_test_1_part_0.xyz"), [at3], format="extxyz")
+
+    processor._final_merge(1.0)
+
+    assert restart_file.exists()
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data["struct_1"]["processed"] is True
+    assert saved_data["struct_2"]["processed"] is True
+    assert saved_data["struct_3"]["processed"] is False
+
+    final_pq = output_dir / "props_merge_test.parquet"
+    final_xyz = output_dir / "structs_merge_test.xyz"
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    final_df = pd.read_parquet(final_pq)
+    assert set(final_df["argonne_rel"]) == {"struct_1", "struct_2"}
+    final_atoms = ase.io.read(str(final_xyz), index=":")
+    assert {at.info["argonne_rel"] for at in final_atoms} == {"struct_1", "struct_2"}
+
+    assert not corrupt_pq.exists()
+    assert not (output_dir / "structs_merge_test_1_part_0.xyz").exists()
+
+
+def test_final_merge_write_error_resets_restart_json(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    data_source = tmp_path / "write_err_test_prefix.json"
+    restart_file = tmp_path / "write_err_test_prefix_restart.json"
+
+    data = {
+        "struct_1": {"key": "s1.tar.zst", "processed": True},
+    }
+    with open(data_source, "w") as f:
+        json.dump(data, f)
+
+    class MockArgs:
+        def __init__(self):
+            self.data_source = data_source
+            self.output_dir = output_dir
+            self.bucket = None
+            self.local_dir = None
+            self.login_file = None
+            self.sample_size = -1
+            self.batch_size = 100
+            self.start_index = 0
+            self.restart = False
+            self.mpi = False
+            self.memory_threshold_gb = 10.0
+
+    args = MockArgs()
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(args, rank=0, size=1, comm=None)
+
+    with open(restart_file, "w") as f:
+        json.dump(data, f)
+
+    df0 = pd.DataFrame([{"argonne_rel": "struct_1", "data_id": 1, "energy": -1.0}])
+    df0.to_parquet(output_dir / "props_write_err_test_0_part_0.parquet", index=False)
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at1.info = {"argonne_rel": "struct_1", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_write_err_test_0_part_0.xyz"), [at1], format="extxyz")
+
+    with patch.object(pd.DataFrame, "to_parquet", side_effect=IOError("Disk write failed")):
+        processor._final_merge(1.0)
+
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data["struct_1"]["processed"] is False
+
+
+def test_final_merge_mismatch_resets_restart_json(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    data_source = tmp_path / "mismatch_test_prefix.json"
+    restart_file = tmp_path / "mismatch_test_prefix_restart.json"
+
+    data = {
+        "struct_1": {"key": "s1.tar.zst", "processed": True},
+        "struct_2": {"key": "s2.tar.zst", "processed": True},
+    }
+    with open(data_source, "w") as f:
+        json.dump(data, f)
+
+    class MockArgs:
+        def __init__(self):
+            self.data_source = data_source
+            self.output_dir = output_dir
+            self.bucket = None
+            self.local_dir = None
+            self.login_file = None
+            self.sample_size = -1
+            self.batch_size = 100
+            self.start_index = 0
+            self.restart = False
+            self.mpi = False
+            self.memory_threshold_gb = 10.0
+
+    args = MockArgs()
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        processor = OmolDataProcessor(args, rank=0, size=1, comm=None)
+
+    with open(restart_file, "w") as f:
+        json.dump(data, f)
+
+    df0 = pd.DataFrame([
+        {"argonne_rel": "struct_1", "data_id": 1, "energy": -1.0},
+        {"argonne_rel": "struct_2", "data_id": 2, "energy": -2.0},
+    ])
+    df0.to_parquet(output_dir / "props_mismatch_test_0_part_0.parquet", index=False)
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at1.info = {"argonne_rel": "struct_1", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_mismatch_test_0_part_0.xyz"), [at1], format="extxyz")
+
+    processor._final_merge(1.0)
+
+    with open(restart_file, "r") as f:
+        saved_data = json.load(f)
+    assert saved_data["struct_1"]["processed"] is True
+    assert saved_data["struct_2"]["processed"] is False

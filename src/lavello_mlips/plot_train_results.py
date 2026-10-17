@@ -112,7 +112,7 @@ def main():
                     try:
                         _valid = config['heads'][head]['valid_file']
                         all_files['valid'] = _valid if isinstance(_valid,list) else [_valid]
-                    except: 
+                    except KeyError:
                         pass 
                     output = Path(f"janus-results-{head}{suf}")
                     if len(isolated) ==0 or not Path(isolated[0]).exists():

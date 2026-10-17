@@ -504,8 +504,8 @@ def homo_lumo(evals, occs, thr=1e-3):
         return None, (evals[virt_idx[0]] if virt_idx else None)
     h = max(occ_idx)
     virt_above = [i for i in virt_idx if i > h] or virt_idx
-    l = min(virt_above) if virt_above else None
-    return evals[h], (evals[l] if l is not None else None)
+    l_idx = min(virt_above) if virt_above else None
+    return evals[h], (evals[l_idx] if l_idx is not None else None)
 
 
 def parse_eigens(txt: str) -> Optional[Dict[str, Any]]:
@@ -1138,62 +1138,201 @@ class OmolDataProcessor(S3DataProcessor):
             logger.error(f"Worker {self.rank} crashed: {e}")
             self.comm.send("DONE", dest=0, tag=TAG_DONE)
 
+    def _save_restart_file(self) -> None:
+        """Saves current state of self.data to self.restart_file."""
+        try:
+            with open(self.restart_file, "w") as f:
+                json_dump(self.data, f, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to write restart file {self.restart_file}: {e}")
+
     def _final_merge(self, elapsed_time: float) -> None:
         """Merges per-rank part files into single Parquet and ExtXYZ outputs."""
+        had_merge_error = False
+        failed_keys = set()
+
+        # Keys present before this merge (if restart and final files existed)
+        existing_pq_keys = set()
+        existing_xyz_keys = set()
 
         # --- Parquet merge ---
         all_dfs = []
         if self.restart and self.output_props_final.exists():
-            all_dfs.append(pd.read_parquet(self.output_props_final))
+            try:
+                prev_df = pd.read_parquet(self.output_props_final)
+                all_dfs.append(prev_df)
+                if "argonne_rel" in prev_df.columns:
+                    existing_pq_keys = set(prev_df["argonne_rel"].dropna().unique())
+            except Exception as e:
+                logger.warning(f"Could not read existing Parquet for restart: {e}")
+                had_merge_error = True
 
         part_files = sorted(
             list(self.output_dir.glob(f"props_{self.group_name}_*.parquet"))
         )
+        successful_pfs = []
         for pf in part_files:
-            if pf == self.output_props_final:
+            if pf == self.output_props_final or pf.name.endswith(".tmp"):
                 continue
             try:
-                all_dfs.append(pd.read_parquet(pf))
-                pf.unlink(missing_ok=True)
+                df_part = pd.read_parquet(pf)
+                all_dfs.append(df_part)
+                successful_pfs.append(pf)
             except Exception as e:
+                had_merge_error = True
                 logger.warning(f"Merge error for {pf}: {e}")
-
-        if all_dfs:
-            final_df = pd.concat(all_dfs, ignore_index=True)
-            final_df.to_parquet(self.output_props_final, index=False)
-            logger.info(f"Merged Parquet into {self.output_props_final}")
-            if "process_time_s" in final_df.columns:
-                n = len(final_df)
-                logger.info(f"Throughput: {n / elapsed_time:.2f} files/s")
-        else:
-            logger.warning("No data processed.")
+                # Try to recover keys from partner ExtXYZ
+                partner_xyz = pf.parent / pf.name.replace("props_", "structs_").replace(".parquet", ".xyz")
+                if partner_xyz.exists():
+                    try:
+                        partner_atoms = read(str(partner_xyz), index=":")
+                        if not isinstance(partner_atoms, list):
+                            partner_atoms = [partner_atoms]
+                        for at in partner_atoms:
+                            k = at.info.get("argonne_rel")
+                            if k:
+                                failed_keys.add(k)
+                    except Exception:
+                        pass
+                    partner_xyz.unlink(missing_ok=True)
+                pf.unlink(missing_ok=True)
 
         # --- ExtXYZ merge ---
         output_xyz_final = self.output_dir / f"structs_{self.group_name}.xyz"
         all_atoms = []
         if self.restart and output_xyz_final.exists():
             try:
-                all_atoms.extend(read(str(output_xyz_final), index=":"))
+                prev_atoms = read(str(output_xyz_final), index=":")
+                if not isinstance(prev_atoms, list):
+                    prev_atoms = [prev_atoms]
+                all_atoms.extend(prev_atoms)
+                existing_xyz_keys = {
+                    at.info.get("argonne_rel")
+                    for at in prev_atoms
+                    if at.info.get("argonne_rel") is not None
+                }
             except Exception as e:
                 logger.warning(f"Could not read existing XYZ for restart: {e}")
+                had_merge_error = True
 
         xyz_parts = sorted(
             list(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
         )
+        successful_xfs = []
         for xf in xyz_parts:
-            if xf == output_xyz_final:
+            if xf == output_xyz_final or xf.name.endswith(".tmp"):
                 continue
             try:
-                all_atoms.extend(read(str(xf), index=":"))
-                xf.unlink(missing_ok=True)
+                atoms_part = read(str(xf), index=":")
+                if not isinstance(atoms_part, list):
+                    atoms_part = [atoms_part]
+                all_atoms.extend(atoms_part)
+                successful_xfs.append(xf)
             except Exception as e:
+                had_merge_error = True
                 logger.warning(f"XYZ merge error for {xf}: {e}")
+                partner_pq = xf.parent / xf.name.replace("structs_", "props_").replace(".xyz", ".parquet")
+                if partner_pq.exists():
+                    try:
+                        df_partner = pd.read_parquet(partner_pq, columns=["argonne_rel"])
+                        for k in df_partner["argonne_rel"].dropna().unique():
+                            failed_keys.add(k)
+                    except Exception:
+                        pass
+                    partner_pq.unlink(missing_ok=True)
+                xf.unlink(missing_ok=True)
 
-        if all_atoms:
-            write(str(output_xyz_final), all_atoms, format="extxyz")
-            logger.info(
-                f"Merged ExtXYZ into {output_xyz_final} ({len(all_atoms)} structures)"
+        if all_dfs:
+            try:
+                final_df = pd.concat(all_dfs, ignore_index=True)
+            except Exception as e:
+                had_merge_error = True
+                logger.error(f"Concatenation error during merge: {e}")
+                final_df = pd.DataFrame()
+        else:
+            final_df = pd.DataFrame()
+
+        pq_keys = (
+            set(final_df["argonne_rel"].dropna().unique())
+            if "argonne_rel" in final_df.columns
+            else set()
+        )
+        xyz_keys = {
+            at.info.get("argonne_rel")
+            for at in all_atoms
+            if at.info.get("argonne_rel") is not None
+        }
+
+        # Keep only structures that exist in both outputs to maintain strict consistency
+        valid_keys = pq_keys & xyz_keys
+        mismatched_keys = pq_keys ^ xyz_keys
+        if mismatched_keys:
+            had_merge_error = True
+            failed_keys.update(mismatched_keys)
+            logger.warning(
+                f"{len(mismatched_keys)} structures mismatched between Parquet and ExtXYZ during merge."
             )
+            if len(pq_keys) != len(valid_keys):
+                final_df = final_df[final_df["argonne_rel"].isin(valid_keys)]
+            if len(xyz_keys) != len(valid_keys):
+                all_atoms = [at for at in all_atoms if at.info.get("argonne_rel") in valid_keys]
+
+        pq_write_success = False
+        if not final_df.empty:
+            try:
+                final_df.to_parquet(self.output_props_final, index=False)
+                logger.info(f"Merged Parquet into {self.output_props_final}")
+                pq_write_success = True
+                if "process_time_s" in final_df.columns:
+                    n = len(final_df)
+                    logger.info(f"Throughput: {n / elapsed_time:.2f} files/s")
+            except Exception as e:
+                had_merge_error = True
+                logger.error(f"Failed to write final Parquet {self.output_props_final}: {e}")
+                failed_keys.update(valid_keys - existing_pq_keys)
+        else:
+            if not self.restart or not self.output_props_final.exists():
+                logger.warning("No data processed.")
+
+        xyz_write_success = False
+        if all_atoms:
+            try:
+                write(str(output_xyz_final), all_atoms, format="extxyz")
+                logger.info(
+                    f"Merged ExtXYZ into {output_xyz_final} ({len(all_atoms)} structures)"
+                )
+                xyz_write_success = True
+            except Exception as e:
+                had_merge_error = True
+                logger.error(f"Failed to write final ExtXYZ {output_xyz_final}: {e}")
+                failed_keys.update(valid_keys - existing_xyz_keys)
+
+        # Unlink successfully merged part files only if both writes succeeded
+        if pq_write_success and xyz_write_success:
+            for pf in successful_pfs:
+                pf.unlink(missing_ok=True)
+            for xf in successful_xfs:
+                xf.unlink(missing_ok=True)
+            final_saved_keys = valid_keys
+        else:
+            final_saved_keys = existing_pq_keys & existing_xyz_keys
+
+        # Identify any key marked processed in self.data that is NOT in the final saved outputs
+        for x, item in self.data.items():
+            if item.get("processed", False) and x not in final_saved_keys:
+                failed_keys.add(x)
+
+        # Reset processed=False for any key that encountered an error during merge
+        if failed_keys:
+            for k in failed_keys:
+                if k in self.data:
+                    logger.warning(
+                        f"Setting processed=False for '{k}' in restart file due to merge error."
+                    )
+                    self.data[k]["processed"] = False
+            self._save_restart_file()
+        elif had_merge_error:
+            self._save_restart_file()
 
     def run_mpi(self) -> None:
         """Main entry point for MPI runs (Hybrid RMA)."""

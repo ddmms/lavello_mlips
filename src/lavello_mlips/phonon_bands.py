@@ -86,8 +86,8 @@ def plot_phonon_bands_altair(data_list, ref_data, k_points, seg_labels, seg_tick
 
         # Fix the expression to be a valid ternary chain, using absolute difference for robustness
         expr = ""
-        for t, l in zip(segment_ticks, segment_labels):
-            expr += f"abs(datum.value - {t}) < 1e-5 ? '{l}' : "
+        for tick, lbl in zip(segment_ticks, segment_labels):
+            expr += f"abs(datum.value - {tick}) < 1e-5 ? '{lbl}' : "
         expr += "datum.label"
 
         segment_chart = base.transform_filter(
