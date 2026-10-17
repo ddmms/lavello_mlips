@@ -34,7 +34,8 @@ def setup_logging(level: int = logging.INFO, log_file_path: Optional[Union[str, 
 
     if log_file_path:
         p = Path(log_file_path)
-        file_handler = logging.FileHandler(p, mode="a")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(p, mode="a", encoding="utf-8")
         file_handler.setFormatter(formatter)
         handlers.append(file_handler)
         status_msg = f"Logfile: {p.resolve()}"
@@ -50,6 +51,27 @@ def setup_logging(level: int = logging.INFO, log_file_path: Optional[Union[str, 
 
     # Capture all warnings issued by the warnings module into the logger
     logging.captureWarnings(True)
+    warnings_logger = logging.getLogger("py.warnings")
+    warnings_logger.propagate = True
+
+    # Capture uncaught exceptions to root logger and logfile
+    prev_excepthook = sys.excepthook
+
+    def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            if prev_excepthook:
+                prev_excepthook(exc_type, exc_value, exc_traceback)
+            else:
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        root_logger.critical(
+            f"Uncaught exception: {exc_value}",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+        if prev_excepthook and prev_excepthook is not handle_uncaught_exception:
+            prev_excepthook(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = handle_uncaught_exception
 
     # Use a logger for the utilities module to log initialization
     util_logger = logging.getLogger(__name__)

@@ -1,12 +1,14 @@
 import io
 import json
+import logging
 import math
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tarfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import warnings
 
 from ase import Atoms
 import ase.io
@@ -883,3 +885,104 @@ def test_restart_recovers_intersection_on_length_mismatch(tmp_path):
     assert saved_data["struct_4"]["processed"] is False
 
     assert set(processor.prefixes) == {"struct_3", "struct_4"}
+
+
+def test_worker_logging_to_file(tmp_path):
+    """Test in a subprocess that worker rank (> 0) writes warnings, errors, and captured warnings into the log file."""
+    data_source = tmp_path / "worker_log_test.json"
+    data_source.write_text("{}")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    log_file = tmp_path / "custom_worker.log"
+
+    script = f"""
+import sys
+import logging
+import warnings
+from unittest.mock import MagicMock, patch
+from pathlib import Path
+from lavello_mlips.process_omol25 import OmolDataProcessor
+
+class MockArgs:
+    def __init__(self):
+        self.data_source = Path(r'{data_source}')
+        self.output_dir = Path(r'{output_dir}')
+        self.log_file = Path(r'{log_file}')
+        self.bucket = None
+        self.local_dir = None
+        self.login_file = None
+        self.sample_size = -1
+        self.batch_size = 100
+        self.start_index = 0
+        self.restart = False
+        self.mpi = True
+        self.memory_threshold_gb = 10.0
+        self.log_level = 'INFO'
+
+args = MockArgs()
+mock_comm = MagicMock()
+mock_comm.Get_rank.return_value = 1
+mock_comm.Get_size.return_value = 2
+
+with patch('lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client', return_value=None):
+    processor = OmolDataProcessor(args, rank=1, size=2, comm=mock_comm)
+
+proc_logger = logging.getLogger('lavello_mlips.process_omol25')
+proc_logger.warning('Test worker warning message')
+proc_logger.error('Test worker error message')
+warnings.warn('Test worker captured python warning')
+"""
+    cmd = [sys.executable, "-c", script]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert log_file.exists()
+    content = log_file.read_text(encoding="utf-8")
+    assert "Test worker warning message" in content
+    assert "Test worker error message" in content
+    assert "Test worker captured python warning" in content
+
+
+def test_worker_uncaught_exception_logged(tmp_path):
+    """Test in a subprocess that sys.excepthook logs uncaught exceptions to the log file."""
+    data_source = tmp_path / "uncaught_test.json"
+    data_source.write_text("{}")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    log_file = tmp_path / "uncaught.log"
+
+    script = f"""
+import sys
+from unittest.mock import MagicMock, patch
+from pathlib import Path
+from lavello_mlips.process_omol25 import OmolDataProcessor
+
+class MockArgs:
+    def __init__(self):
+        self.data_source = Path(r'{data_source}')
+        self.output_dir = Path(r'{output_dir}')
+        self.log_file = Path(r'{log_file}')
+        self.bucket = None
+        self.local_dir = None
+        self.login_file = None
+        self.sample_size = -1
+        self.batch_size = 100
+        self.start_index = 0
+        self.restart = False
+        self.mpi = True
+        self.memory_threshold_gb = 10.0
+        self.log_level = 'INFO'
+
+args = MockArgs()
+mock_comm = MagicMock()
+with patch('lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client', return_value=None):
+    OmolDataProcessor(args, rank=1, size=2, comm=mock_comm)
+
+raise RuntimeError('Fatal worker error simulated')
+"""
+    cmd = [sys.executable, "-c", script]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode != 0
+    assert log_file.exists()
+    content = log_file.read_text(encoding="utf-8")
+    assert "Fatal worker error simulated" in content
+    assert "CRITICAL" in content

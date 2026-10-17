@@ -128,10 +128,12 @@ def main() -> None:
         "CRITICAL": logging.CRITICAL,
     }
 
+    logfile = (
+        args.log_file if args.log_file else Path(args.data_source.stem + ".log")
+    )
+    args.log_file = logfile
+
     if rank == 0:
-        logfile = (
-            args.log_file if args.log_file else Path(args.data_source.stem + ".log")
-        )
         setup_logging(
             level=log_level_map.get(args.log_level.upper(), logging.INFO),
             log_file_path=logfile,

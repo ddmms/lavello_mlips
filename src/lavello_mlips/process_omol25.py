@@ -8,6 +8,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from io import BytesIO, StringIO
@@ -304,6 +305,8 @@ def _integrals_from_orca_2json(gbw: bytes, atoms, shells):
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()
             raise RuntimeError(f"orca_2json failed: {detail[-2000:]}")
+        if completed.stderr and completed.stderr.strip():
+            logger.warning("orca_2json warning: %s", completed.stderr.strip())
         payload = json.loads(Path(base + ".json").read_text())
     molecule = payload["Molecule"]
     overlap = np.asarray(molecule["S-Matrix"], dtype=np.float64)
@@ -355,7 +358,8 @@ def spin_multipoles_from_orca(
         try:
             if load_ecp(basis, symbol):
                 ecp[symbol] = basis
-        except Exception:
+        except Exception as e_ecp:
+            logger.warning("ECP %s not found for %s: %s", basis, symbol, e_ecp)
             continue
     molecule = gto.M(
         atom=[(ELEMENTS[atomic_number], xyz) for atomic_number, xyz in atoms],
@@ -424,7 +428,7 @@ def _attach_spin_multipoles(
             spin_multipoles_from_orca(gbw, density_npz, parse_orca_basis(inp_text), int(charge))
         )
     except Exception as exc:
-        logger.error("Spin multipole failed for %s: %s", ident, exc)
+        logger.error("Spin multipole failed for %s: %s", ident, exc, exc_info=True)
         rec["status_spin_multipole"] = "ERROR"
 
 
@@ -781,6 +785,15 @@ class OmolDataProcessor(S3DataProcessor):
             self.output_dir / f"props_{self.group_name}_{self.rank}.parquet"
         )
 
+        log_file = getattr(args, "log_file", None)
+        if log_file:
+            self.logfile = Path(log_file)
+        elif hasattr(self, "output_dir") and self.output_dir:
+            self.logfile = Path(self.output_dir) / f"{self.group_name}.log"
+        else:
+            self.logfile = Path(f"{self.group_name}.log")
+        self._setup_logging()
+
         if self.files_to_process.name.endswith("_restart.json"):
             self.restart_file = self.files_to_process
             self.restart = True
@@ -902,7 +915,8 @@ class OmolDataProcessor(S3DataProcessor):
                             tmp_xyz.replace(xyz_file)
                         except Exception as e_repair:
                             logger.error(
-                                f"Failed to repair/prune {pf.name}: {e_repair}. Discarding."
+                                f"Failed to repair/prune {pf.name}: {e_repair}. Discarding.",
+                                exc_info=True,
                             )
                             pf.unlink(missing_ok=True)
                             xyz_file.unlink(missing_ok=True)
@@ -967,6 +981,70 @@ class OmolDataProcessor(S3DataProcessor):
 
         if self.rank == 0:
             logger.info(f"Using flush batch size of {self.batch_size}")
+
+    def _setup_logging(self) -> None:
+        """Configures logging for this processor rank so all errors and warnings are recorded in the log file."""
+        root_logger = logging.getLogger()
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        formatter = logging.Formatter(log_format)
+
+        log_level_str = getattr(self.args, "log_level", "INFO")
+        log_level = getattr(logging, str(log_level_str).upper(), logging.INFO)
+        if root_logger.level == logging.NOTSET or root_logger.level > log_level:
+            root_logger.setLevel(log_level)
+
+        target_path = Path(self.logfile).resolve()
+
+        has_file_handler = False
+        for h in root_logger.handlers[:]:
+            if isinstance(h, logging.FileHandler):
+                try:
+                    if Path(h.baseFilename).resolve() == target_path:
+                        has_file_handler = True
+                    else:
+                        root_logger.removeHandler(h)
+                        h.close()
+                except Exception:
+                    pass
+
+        if not has_file_handler:
+            self.logfile.parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(self.logfile, mode="a", encoding="utf-8")
+            fh.setFormatter(formatter)
+            fh.setLevel(log_level)
+            root_logger.addHandler(fh)
+
+        has_stream_handler = any(
+            isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+            for h in root_logger.handlers
+        )
+        if not has_stream_handler:
+            sh = logging.StreamHandler(sys.stderr)
+            sh.setFormatter(formatter)
+            sh.setLevel(logging.WARNING if self.rank > 0 else log_level)
+            root_logger.addHandler(sh)
+
+        logging.captureWarnings(True)
+        warnings_logger = logging.getLogger("py.warnings")
+        warnings_logger.propagate = True
+
+        prev_excepthook = sys.excepthook
+
+        def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+            if issubclass(exc_type, KeyboardInterrupt):
+                if prev_excepthook:
+                    prev_excepthook(exc_type, exc_value, exc_traceback)
+                else:
+                    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            logger.critical(
+                f"Rank {self.rank} uncaught exception: {exc_value}",
+                exc_info=(exc_type, exc_value, exc_traceback),
+            )
+            if prev_excepthook and prev_excepthook is not handle_uncaught_exception:
+                prev_excepthook(exc_type, exc_value, exc_traceback)
+
+        sys.excepthook = handle_uncaught_exception
 
     def flush_recs(self, recs: List[Dict[str, Any]], all_atoms: Optional[List[Any]] = None) -> None:
         """Flush a batch of records to Parquet, and optionally atoms to ExtXYZ."""
@@ -1040,7 +1118,7 @@ class OmolDataProcessor(S3DataProcessor):
 
             return build_orca_record(txt_out, txt_prop, txt_inp, gbw, density, structure_id=x)
         except Exception as e:
-            logger.error(f"Error parsing buffer for {x}: {e}")
+            logger.error(f"Error parsing buffer for {x}: {e}", exc_info=True)
             return None
 
     def process_single(self, idx: int, s3_client: Any = None) -> Optional[Tuple[Dict[str, Any], Any, str]]:
@@ -1125,7 +1203,7 @@ class OmolDataProcessor(S3DataProcessor):
             atoms.info["data_id"] = rec["data_id"]
             return rec, atoms, x
         except Exception as e:
-            logger.error(f"Error processing {source}: {e}")
+            logger.error(f"Error processing {source}: {e}", exc_info=True)
             return None
 
     def _manager_loop(self) -> None:
@@ -1218,7 +1296,7 @@ class OmolDataProcessor(S3DataProcessor):
             logger.info(f"Worker {self.rank} sending TAG_DONE signal.")
             self.comm.send("DONE", dest=0, tag=TAG_DONE)
         except Exception as e:
-            logger.error(f"Worker {self.rank} crashed: {e}")
+            logger.error(f"Worker {self.rank} crashed: {e}", exc_info=True)
             self.comm.send("DONE", dest=0, tag=TAG_DONE)
 
     def _save_restart_file(self) -> None:
@@ -1227,7 +1305,7 @@ class OmolDataProcessor(S3DataProcessor):
             with open(self.restart_file, "w") as f:
                 json_dump(self.data, f, indent=4)
         except Exception as e:
-            logger.error(f"Failed to write restart file {self.restart_file}: {e}")
+            logger.error(f"Failed to write restart file {self.restart_file}: {e}", exc_info=True)
 
     def _final_merge(self, elapsed_time: float) -> None:
         """Merges per-rank part files into single Parquet and ExtXYZ outputs."""
@@ -1330,7 +1408,7 @@ class OmolDataProcessor(S3DataProcessor):
                 final_df = pd.concat(all_dfs, ignore_index=True)
             except Exception as e:
                 had_merge_error = True
-                logger.error(f"Concatenation error during merge: {e}")
+                logger.error(f"Concatenation error during merge: {e}", exc_info=True)
                 final_df = pd.DataFrame()
         else:
             final_df = pd.DataFrame()
@@ -1380,7 +1458,7 @@ class OmolDataProcessor(S3DataProcessor):
                     logger.info(f"Throughput: {n / elapsed_time:.2f} files/s")
             except Exception as e:
                 had_merge_error = True
-                logger.error(f"Failed to write final Parquet {self.output_props_final}: {e}")
+                logger.error(f"Failed to write final Parquet {self.output_props_final}: {e}", exc_info=True)
                 failed_keys.update(valid_keys - existing_pq_keys)
         else:
             if not self.restart or not self.output_props_final.exists():
@@ -1400,7 +1478,7 @@ class OmolDataProcessor(S3DataProcessor):
                 xyz_write_success = True
             except Exception as e:
                 had_merge_error = True
-                logger.error(f"Failed to write final ExtXYZ {output_xyz_final}: {e}")
+                logger.error(f"Failed to write final ExtXYZ {output_xyz_final}: {e}", exc_info=True)
                 failed_keys.update(valid_keys - existing_xyz_keys)
 
         # Unlink successfully merged part files only if both writes succeeded
@@ -1459,6 +1537,9 @@ class OmolDataProcessor(S3DataProcessor):
                 self._manager_loop()
             else:
                 self._worker_loop()
+        except Exception as e:
+            logger.error(f"Rank {self.rank} encountered error in run_mpi: {e}", exc_info=True)
+            raise
         finally:
             self.win.Free()
             logger.info(f"Rank {self.rank} exiting clean.")
@@ -1490,5 +1571,6 @@ class OmolDataProcessor(S3DataProcessor):
             with open(self.restart_file, "w") as f:
                 json_dump(self.data, f, indent=4)
             self._final_merge(time.time() - start_time)
-        finally:
-            pass
+        except Exception as e:
+            logger.error(f"Error during serial execution: {e}", exc_info=True)
+            raise
