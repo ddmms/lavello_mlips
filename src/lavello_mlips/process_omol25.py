@@ -801,11 +801,13 @@ class OmolDataProcessor(S3DataProcessor):
                     "Scanning output directory to recover already processed files..."
                 )
                 recovered_count = 0
-                parquet_files = list(
-                    self.output_dir.glob(f"props_{self.group_name}*.parquet")
-                )
+                parquet_files = [
+                    pf
+                    for pf in self.output_dir.glob(f"props_{self.group_name}*.parquet")
+                    if not pf.name.endswith(".tmp")
+                ]
 
-                for pf in parquet_files:
+                for pf in tqdm(parquet_files, desc="Recovering parts", disable=len(parquet_files) == 0):
                     xyz_file = pf.parent / pf.name.replace(
                         "props_", "structs_"
                     ).replace(".parquet", ".xyz")
@@ -1167,13 +1169,13 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.warning(f"Could not read existing Parquet for restart: {e}")
                 had_merge_error = True
 
-        part_files = sorted(
-            list(self.output_dir.glob(f"props_{self.group_name}_*.parquet"))
-        )
+        part_files = [
+            pf
+            for pf in sorted(self.output_dir.glob(f"props_{self.group_name}_*.parquet"))
+            if pf != self.output_props_final and not pf.name.endswith(".tmp")
+        ]
         successful_pfs = []
-        for pf in part_files:
-            if pf == self.output_props_final or pf.name.endswith(".tmp"):
-                continue
+        for pf in tqdm(part_files, desc="Merging Parquet parts", disable=len(part_files) == 0):
             try:
                 df_part = pd.read_parquet(pf)
                 all_dfs.append(df_part)
@@ -1215,13 +1217,13 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.warning(f"Could not read existing XYZ for restart: {e}")
                 had_merge_error = True
 
-        xyz_parts = sorted(
-            list(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
-        )
+        xyz_parts = [
+            xf
+            for xf in sorted(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
+            if xf != output_xyz_final and not xf.name.endswith(".tmp")
+        ]
         successful_xfs = []
-        for xf in xyz_parts:
-            if xf == output_xyz_final or xf.name.endswith(".tmp"):
-                continue
+        for xf in tqdm(xyz_parts, desc="Merging ExtXYZ parts", disable=len(xyz_parts) == 0):
             try:
                 atoms_part = read(str(xf), index=":")
                 if not isinstance(atoms_part, list):
@@ -1297,7 +1299,11 @@ class OmolDataProcessor(S3DataProcessor):
         xyz_write_success = False
         if all_atoms:
             try:
-                write(str(output_xyz_final), all_atoms, format="extxyz")
+                write(
+                    str(output_xyz_final),
+                    tqdm(all_atoms, desc="Writing merged ExtXYZ", disable=len(all_atoms) == 0),
+                    format="extxyz",
+                )
                 logger.info(
                     f"Merged ExtXYZ into {output_xyz_final} ({len(all_atoms)} structures)"
                 )

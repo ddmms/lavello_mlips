@@ -5,15 +5,16 @@ in `atoms.info`.
 """
 
 import argparse
-import math
-import logging
-import json
-from pathlib import Path
 from collections import defaultdict
+import json
+import logging
+import math
+from pathlib import Path
 
-import pandas as pd
+from ase.io import iread
 import numpy as np
-from ase.io import read
+import pandas as pd
+from tqdm import tqdm
 
 from .utils import setup_logging
 
@@ -96,21 +97,22 @@ def main() -> None:
         )
 
     logger.info(f"Loaded {len(df)} records from Parquet.")
-    parquet_by_sha = {row["geom_sha1"]: row for _, row in df.iterrows()}
-    parquet_by_argone_rel = {
-        row["argonne_rel"]: row
-        for _, row in df.iterrows()
-        if "argonne_rel" in row and pd.notna(row["argonne_rel"])
-    }
+    parquet_by_sha = {}
+    parquet_by_argone_rel = {}
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Indexing Parquet records", disable=len(df) == 0):
+        sha = row["geom_sha1"]
+        parquet_by_sha[sha] = row
+        rel = row.get("argonne_rel")
+        if rel is not None and pd.notna(rel):
+            parquet_by_argone_rel[rel] = row
+
     logger.info(f"Loading ExtXYZ file from {args.extxyz} (this may take a moment)...")
-    all_atoms = read(str(args.extxyz), index=":")
-    if not isinstance(all_atoms, list):
-        all_atoms = [all_atoms] if all_atoms else []
+    all_atoms = list(tqdm(iread(str(args.extxyz), index=":"), total=len(df), desc="Loading ExtXYZ"))
     logger.info(f"Loaded {len(all_atoms)} structures from ExtXYZ.")
 
     xyz_by_sha_list = defaultdict(list)
     xyz_by_argone_rel_list = defaultdict(list)
-    for i, at in enumerate(all_atoms):
+    for i, at in enumerate(tqdm(all_atoms, desc="Indexing ExtXYZ structures", disable=len(all_atoms) == 0)):
         sha = at.info.get("geom_sha1")
         rel = at.info.get("argonne_rel")
         if rel is not None and not (isinstance(rel, float) and math.isnan(rel)):
@@ -296,7 +298,11 @@ def main() -> None:
         and "time" not in key.lower()
     }
 
-    for argonne_rel in common_argonne_rels:
+    for argonne_rel in tqdm(
+        sorted(common_argonne_rels),
+        desc="Validating properties",
+        disable=len(common_argonne_rels) == 0,
+    ):
         row = parquet_by_argone_rel[argonne_rel]
         info = xyz_by_argone_rel[argonne_rel].info
 
