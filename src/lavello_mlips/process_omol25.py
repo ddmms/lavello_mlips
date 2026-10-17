@@ -19,9 +19,6 @@ import numpy as np
 import pandas as pd
 from ase.io import read, write
 from mpi4py import MPI
-from pyscf import gto
-from pyscf.data.elements import ELEMENTS
-from pyscf.gto.basis import load_ecp
 from tarfile import open as tar_open
 from tqdm import tqdm
 from zstandard import ZstdDecompressor
@@ -163,17 +160,6 @@ _SHARK_HEADER = (
 )
 # orca_2json quadrupole matrices: xx, yy, zz, xy, xz, yz.
 _QUAD_PAIRS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
-
-
-def parse_orca_basis(inp_text: str) -> str:
-    """Basis name PySCF can load, taken from the ORCA input."""
-    named = re.search(r'GTOName\s+"([^"]+)"', inp_text or "", re.I)
-    if named:
-        return Path(named.group(1)).stem.lower()
-    keyword = re.search(r"\b(def2-[A-Za-z0-9]+)\b", inp_text or "", re.I)
-    if keyword:
-        return keyword.group(1).lower()
-    raise RuntimeError("could not find the ORCA basis name")
 
 
 def _gbw_pointers(data: bytes) -> Tuple[int, int]:
@@ -334,9 +320,7 @@ def _unpack_triangular(values: np.ndarray, nao: int) -> np.ndarray:
     return matrix
 
 
-def spin_multipoles_from_orca(
-    gbw: bytes, density_npz: bytes, basis: str, charge: int
-) -> Dict[str, Any]:
+def spin_multipoles_from_orca(gbw: bytes, density_npz: bytes) -> Dict[str, Any]:
     """Spin dipole and traceless spin quadrupole at the coordinate origin.
 
     Overlap and multipole integrals come from ``orca_2json`` in the GBW AO
@@ -348,47 +332,15 @@ def spin_multipoles_from_orca(
     geometry_offset, basis_offset = _gbw_pointers(gbw)
     atoms = _gbw_geometry(gbw, geometry_offset)
     shells = _gbw_shells(gbw, basis_offset, len(atoms))
-    nuclear_charge = float(sum(atomic_number for atomic_number, _ in atoms))
-    n_elec = int(round(nuclear_charge - charge))
-    ecp = {}
-    for atomic_number, _ in atoms:
-        symbol = ELEMENTS[atomic_number]
-        if symbol in ecp:
-            continue
-        try:
-            if load_ecp(basis, symbol):
-                ecp[symbol] = basis
-        except Exception as e_ecp:
-            logger.warning("ECP %s not found for %s: %s", basis, symbol, e_ecp)
-            continue
-    molecule = gto.M(
-        atom=[(ELEMENTS[atomic_number], xyz) for atomic_number, xyz in atoms],
-        basis=basis,
-        ecp=ecp or None,
-        unit="Bohr",
-        charge=int(charge),
-        spin=n_elec % 2,
-        cart=False,
-        verbose=0,
-    )
     overlap, dipole, quadrupole6 = _integrals_from_orca_2json(gbw, atoms, shells)
     nao = overlap.shape[0]
 
     with np.load(BytesIO(density_npz)) as packed:
-        total = _unpack_triangular(np.asarray(packed["orca.scfp"]), nao)
         if "orca.scfr" in packed.files:
             spin = _unpack_triangular(np.asarray(packed["orca.scfr"]), nao)
         else:
-            spin = np.zeros_like(total)
+            spin = np.zeros((nao, nao), dtype=np.float64)
 
-    n_total = float(np.einsum("ij,ji->", total, overlap))
-    # def2 replaces some cores by an ECP, so the density integrates to the
-    # valence count.
-    expected = float(molecule.nelectron)
-    if abs(n_total - expected) > 0.25:
-        raise RuntimeError(
-            f"density integrates to {n_total:.4f} electrons, expected {expected:.0f}"
-        )
     n_spin = float(np.einsum("ij,ji->", spin, overlap))
     mu_au = np.einsum("ij,aij->a", spin, dipole)
     second = np.einsum("ij,aij->a", spin, quadrupole6)
@@ -409,7 +361,6 @@ def spin_multipoles_from_orca(
 
 def _attach_spin_multipoles(
     rec: Dict[str, Any],
-    inp_text: str,
     gbw: Optional[bytes],
     density_npz: Optional[bytes],
     structure_id: Optional[str] = None,
@@ -418,15 +369,12 @@ def _attach_spin_multipoles(
         rec["status_spin_multipole"] = "MISSING"
         return
     ident = structure_id or rec.get("argonne_rel") or rec.get("data_id") or "unknown"
-    charge = rec.get("total_charge_e")
-    if charge is None:
+    if rec.get("total_charge_e") is None:
         logger.warning("Spin multipole failed for %s: missing total charge", ident)
         rec["status_spin_multipole"] = "NO_CHARGE"
         return
     try:
-        rec.update(
-            spin_multipoles_from_orca(gbw, density_npz, parse_orca_basis(inp_text), int(charge))
-        )
+        rec.update(spin_multipoles_from_orca(gbw, density_npz))
     except Exception as exc:
         logger.error("Spin multipole failed for %s: %s", ident, exc, exc_info=True)
         rec["status_spin_multipole"] = "ERROR"
@@ -734,7 +682,7 @@ def build_orca_record(
     else:
         rec["status_eigs"] = "MISSING"
 
-    _attach_spin_multipoles(rec, txt_inp or "", gbw, density, structure_id=structure_id)
+    _attach_spin_multipoles(rec, gbw, density, structure_id=structure_id)
 
     for k, v in rec.items():
         if v is not None:

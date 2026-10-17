@@ -30,7 +30,6 @@ dependencies = [
     "altair",
     "h5py",
     "numpy",
-    "pyscf",
 ]
 
 [project.optional-dependencies]
