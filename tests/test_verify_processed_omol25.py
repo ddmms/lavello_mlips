@@ -393,3 +393,177 @@ def test_verify_processed_omol25_with_json_file_not_found(tmp_path):
     assert "does not exist" in (res.stderr + res.stdout)
 
 
+def test_verify_json_contains_more_keys_than_parquet_and_extxyz(tmp_path):
+    pq_file = tmp_path / "test_json_surplus.parquet"
+    xyz_file = tmp_path / "test_json_surplus.xyz"
+    json_file = tmp_path / "test_json_surplus.json"
+
+    # JSON has 3 keys
+    json_data = {
+        "dataset/mol_1/": {"key": "orca.tar.zst"},
+        "dataset/mol_2/": {"key": "orca.tar.zst"},
+        "dataset/mol_3/": {"key": "orca.tar.zst"},
+    }
+    json_file.write_text(json.dumps(json_data))
+
+    # Parquet and XYZ only have 2 keys
+    df = pd.DataFrame(
+        [
+            {"geom_sha1": "sha_1", "test_energy": -10.0, "argonne_rel": "dataset/mol_1/"},
+            {"geom_sha1": "sha_2", "test_energy": -20.0, "argonne_rel": "dataset/mol_2/"},
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "sha_1"
+    a1.info["test_energy"] = -10.0
+    a1.info["argonne_rel"] = "dataset/mol_1/"
+
+    a2 = Atoms("O2", positions=[(0, 0, 0), (0, 0, 1.2)])
+    a2.info["geom_sha1"] = "sha_2"
+    a2.info["test_energy"] = -20.0
+    a2.info["argonne_rel"] = "dataset/mol_2/"
+
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+        "--json",
+        str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "JSON file contains more keys than Parquet and ExtXYZ: 3 in JSON vs 2 in Parquet and 2 in ExtXYZ" in res.stdout
+    assert "JSON file contains more keys than Parquet records: 3 JSON keys vs 2 Parquet records (1 surplus keys in JSON)" in res.stdout
+    assert "JSON file contains more keys than ExtXYZ structures: 3 JSON keys vs 2 ExtXYZ structures (1 surplus keys in JSON)" in res.stdout
+
+
+def test_verify_same_sha_different_species_not_duplicate(tmp_path):
+    pq_file = tmp_path / "test_diff_species.parquet"
+    xyz_file = tmp_path / "test_diff_species.xyz"
+
+    # Same SHA, but different atom species (H2 vs O2)
+    df = pd.DataFrame(
+        [
+            {"geom_sha1": "sha_shared", "test_energy": -10.0, "argonne_rel": "mol_h2", "total_charge_e": 0},
+            {"geom_sha1": "sha_shared", "test_energy": -20.0, "argonne_rel": "mol_o2", "total_charge_e": 0},
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 1)])
+    a1.info["geom_sha1"] = "sha_shared"
+    a1.info["test_energy"] = -10.0
+    a1.info["argonne_rel"] = "mol_h2"
+    a1.info["total_charge_e"] = 0
+
+    a2 = Atoms("O2", positions=[(0, 0, 0), (0, 0, 1)])
+    a2.info["geom_sha1"] = "sha_shared"
+    a2.info["test_energy"] = -20.0
+    a2.info["argonne_rel"] = "mol_o2"
+    a2.info["total_charge_e"] = 0
+
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "differing in atomic species or charge; not duplicates" in res.stdout
+    assert "Confirmed duplicate structures detected" not in res.stdout
+
+
+def test_verify_same_sha_same_species_different_charge_not_duplicate(tmp_path):
+    pq_file = tmp_path / "test_diff_charge.parquet"
+    xyz_file = tmp_path / "test_diff_charge.xyz"
+
+    # Same SHA, same species (H2O), but different charge states (0 vs +1)
+    df = pd.DataFrame(
+        [
+            {"geom_sha1": "sha_shared_geom", "test_energy": -10.0, "argonne_rel": "mol_neutral", "total_charge_e": 0},
+            {"geom_sha1": "sha_shared_geom", "test_energy": -20.0, "argonne_rel": "mol_cation", "total_charge_e": 1},
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2O", positions=[(0, 0, 0), (0, 1, 0), (1, 0, 0)])
+    a1.info["geom_sha1"] = "sha_shared_geom"
+    a1.info["test_energy"] = -10.0
+    a1.info["argonne_rel"] = "mol_neutral"
+    a1.info["total_charge_e"] = 0
+
+    a2 = Atoms("H2O", positions=[(0, 0, 0), (0, 1, 0), (1, 0, 0)])
+    a2.info["geom_sha1"] = "sha_shared_geom"
+    a2.info["test_energy"] = -20.0
+    a2.info["argonne_rel"] = "mol_cation"
+    a2.info["total_charge_e"] = 1
+
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "differing in atomic species or charge; not duplicates" in res.stdout
+    assert "Confirmed duplicate structures detected" not in res.stdout
+
+
+def test_verify_same_sha_same_species_same_charge_confirmed_duplicate(tmp_path):
+    pq_file = tmp_path / "test_dup.parquet"
+    xyz_file = tmp_path / "test_dup.xyz"
+
+    # Same SHA, same species (H2O), same charge (0), but different argonne_rel
+    df = pd.DataFrame(
+        [
+            {"geom_sha1": "sha_duplicate", "test_energy": -10.0, "argonne_rel": "mol_dup_1", "total_charge_e": 0},
+            {"geom_sha1": "sha_duplicate", "test_energy": -10.0, "argonne_rel": "mol_dup_2", "total_charge_e": 0},
+        ]
+    )
+    df.to_parquet(pq_file)
+
+    a1 = Atoms("H2O", positions=[(0, 0, 0), (0, 1, 0), (1, 0, 0)])
+    a1.info["geom_sha1"] = "sha_duplicate"
+    a1.info["test_energy"] = -10.0
+    a1.info["argonne_rel"] = "mol_dup_1"
+    a1.info["total_charge_e"] = 0
+
+    a2 = Atoms("H2O", positions=[(0, 0, 0), (0, 1, 0), (1, 0, 0)])
+    a2.info["geom_sha1"] = "sha_duplicate"
+    a2.info["test_energy"] = -10.0
+    a2.info["argonne_rel"] = "mol_dup_2"
+    a2.info["total_charge_e"] = 0
+
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    cmd = [
+        "verify_processed_omol25",
+        "--parquet",
+        str(pq_file),
+        "--extxyz",
+        str(xyz_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Confirmed duplicate structures detected" in res.stdout
+    assert "Structural redundancy detected" in res.stdout
+
+    # Verify duplicate dump file was created in parquet parent dir
+    dup_file = tmp_path / "duplicates_test_dup.json"
+    assert dup_file.exists()
+    dup_data = json.loads(dup_file.read_text())
+    assert "sha_duplicate" in dup_data["confirmed_duplicates"]
+    assert len(dup_data["confirmed_duplicates"]["sha_duplicate"]) == 2
+
+
+

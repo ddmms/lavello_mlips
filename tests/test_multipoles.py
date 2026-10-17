@@ -1,7 +1,9 @@
 import io
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
 import tarfile
 from unittest.mock import patch
 
@@ -303,6 +305,8 @@ def test_spin_multipoles_light_elements(capsys):
     sample = Path("ani1xbb/aniBB_003_101_0_1")
     if not sample.exists():
         pytest.skip("ani1xbb sample not available")
+    if not os.environ.get("ORCA_2JSON") and not shutil.which("orca_2json"):
+        pytest.skip("orca_2json not available")
 
     rec, _ = build_orca_record(
         (sample / "orca.out").read_text(),

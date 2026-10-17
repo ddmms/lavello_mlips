@@ -10,6 +10,7 @@ import json
 import logging
 import math
 from pathlib import Path
+from typing import Optional
 
 from ase.io import iread
 import numpy as np
@@ -72,6 +73,50 @@ def _to_clean_array(val):
     return np.array(val.tolist() if hasattr(val, "tolist") else val)
 
 
+def get_structure_charge(at, pq_row=None) -> Optional[float]:
+    """
+    Extract total charge of a structure from atoms.info, initial charges, or Parquet row.
+
+    Parameters
+    ----------
+    at : ase.Atoms or None
+        The atomic structure.
+    pq_row : pd.Series or dict or None
+        The corresponding Parquet row.
+
+    Returns
+    -------
+    Optional[float]
+        The total charge if found, else None.
+    """
+    if at is not None and hasattr(at, "info"):
+        for key in ("total_charge_e", "charge", "total_charge"):
+            if key in at.info:
+                val = at.info[key]
+                if val is not None and not (isinstance(val, float) and math.isnan(val)):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+        try:
+            init_charges = at.get_initial_charges()
+            if init_charges is not None and len(init_charges) > 0:
+                return float(np.sum(init_charges))
+        except Exception:
+            pass
+
+    if pq_row is not None:
+        for key in ("total_charge_e", "charge", "total_charge"):
+            if key in pq_row:
+                val = pq_row[key]
+                if pd.notna(val):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+    return None
+
+
 def main() -> None:
     """
     Main entry point for verifying Parquet and ExtXYZ consistency.
@@ -81,6 +126,29 @@ def main() -> None:
     """
     args = parse_args()
     setup_logging()
+
+    if args.json_file is None:
+        stem = args.parquet.stem
+        raw_prefix = stem[6:] if stem.startswith("props_") else stem
+        candidate_names = [
+            f"{stem}_prefix.json",
+            f"{raw_prefix}_prefix.json",
+            f"{stem}.json",
+            f"{raw_prefix}.json",
+        ]
+        search_dirs = [args.parquet.parent]
+        cwd = Path.cwd()
+        if cwd not in search_dirs:
+            search_dirs.append(cwd)
+        for cand_dir in search_dirs:
+            for name in candidate_names:
+                cand = cand_dir / name
+                if cand.exists() and cand.is_file():
+                    args.json_file = cand
+                    logger.info(f"Auto-detected prefix JSON file: '{args.json_file}'")
+                    break
+            if args.json_file is not None:
+                break
 
     if not args.parquet.exists():
         raise FileNotFoundError(f"Parquet file '{args.parquet}' does not exist.")
@@ -97,14 +165,17 @@ def main() -> None:
         )
 
     logger.info(f"Loaded {len(df)} records from Parquet.")
-    parquet_by_sha = {}
-    parquet_by_argone_rel = {}
+    parquet_by_sha_list = defaultdict(list)
+    parquet_by_argone_rel_list = defaultdict(list)
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Indexing Parquet records", disable=len(df) == 0):
         sha = row["geom_sha1"]
-        parquet_by_sha[sha] = row
+        parquet_by_sha_list[sha].append(row)
         rel = row.get("argonne_rel")
         if rel is not None and pd.notna(rel):
-            parquet_by_argone_rel[rel] = row
+            parquet_by_argone_rel_list[rel].append(row)
+
+    parquet_by_sha = {s: rows[-1] for s, rows in parquet_by_sha_list.items()}
+    parquet_by_argone_rel = {r: rows[-1] for r, rows in parquet_by_argone_rel_list.items()}
 
     logger.info(f"Loading ExtXYZ file from {args.extxyz} (this may take a moment)...")
     all_atoms = list(tqdm(iread(str(args.extxyz), index=":"), total=len(df), desc="Loading ExtXYZ"))
@@ -127,35 +198,121 @@ def main() -> None:
     xyz_by_sha = {s: atoms[-1] for s, atoms in xyz_by_sha_list.items()}
     xyz_by_argone_rel = {r: atoms[-1] for r, atoms in xyz_by_argone_rel_list.items()}
 
-    if len(xyz_by_sha) != len(xyz_by_argone_rel):
+    confirmed_duplicates_by_sha = defaultdict(list)
+    distinct_states_by_sha = defaultdict(list)
+
+    for s, atoms in xyz_by_sha_list.items():
+        if len(atoms) <= 1:
+            continue
+
+        # Group structures sharing geom_sha1 by (atomic species, total charge)
+        state_groups = defaultdict(list)
+        for at in atoms:
+            rel = at.info.get("argonne_rel")
+            species = tuple(at.get_chemical_symbols())
+            charge = get_structure_charge(at, parquet_by_argone_rel.get(rel))
+            state_groups[(species, charge)].append(at)
+
+        for (species, charge), grp in state_groups.items():
+            if len(grp) > 1:
+                # Same SHA, same species, and same charge -> confirmed duplicates!
+                confirmed_duplicates_by_sha[s].extend(grp)
+            else:
+                # Same SHA, but distinct species or distinct charge -> not duplicates
+                distinct_states_by_sha[s].extend(grp)
+
+    # Check for duplicate frames within the same argonne_rel
+    xyz_dups_by_rel = {
+        r: atoms for r, atoms in xyz_by_argone_rel_list.items() if len(atoms) > 1
+    }
+
+    if confirmed_duplicates_by_sha:
         logger.warning(
-            f"❌ Structural redundancy detected: {len(xyz_by_sha)} unique SHAs vs {len(xyz_by_argone_rel)} unique argonne_rels."
+            f"❌ Confirmed duplicate structures detected: {len(confirmed_duplicates_by_sha)} unique SHAs contain "
+            f"duplicate structures with identical species and charge."
+        )
+        for s, dups in list(confirmed_duplicates_by_sha.items())[:5]:
+            rels = [d.info.get("argonne_rel") for d in dups]
+            sp = list(dups[0].get_chemical_symbols())
+            ch = get_structure_charge(dups[0], parquet_by_argone_rel.get(rels[0]))
+            logger.warning(
+                f"   SHA {s}: {len(dups)} duplicate structures (species={sp}, charge={ch}) across argonne_rels: {rels}"
+            )
+        if len(confirmed_duplicates_by_sha) > 5:
+            logger.warning(
+                f"   ... and {len(confirmed_duplicates_by_sha) - 5} more duplicate SHAs."
+            )
+
+    if distinct_states_by_sha:
+        logger.info(
+            f"ℹ️ {len(distinct_states_by_sha)} unique SHAs shared by distinct states "
+            f"(differing in atomic species or charge; not duplicates)."
+        )
+        for s, states in list(distinct_states_by_sha.items())[:5]:
+            details = [
+                f"(argonne_rel={at.info.get('argonne_rel')}, species={''.join(at.get_chemical_symbols())}, charge={get_structure_charge(at, parquet_by_argone_rel.get(at.info.get('argonne_rel')))})"
+                for at in states
+            ]
+            logger.info(f"   SHA {s} states: {', '.join(details)}")
+        if len(distinct_states_by_sha) > 5:
+            logger.info(
+                f"   ... and {len(distinct_states_by_sha) - 5} more multi-state SHAs."
+            )
+
+    if not confirmed_duplicates_by_sha and not distinct_states_by_sha:
+        logger.info(f"✅ All {len(xyz_by_sha)} structures have unique SHAs (0 duplicates detected).")
+
+    if confirmed_duplicates_by_sha or xyz_dups_by_rel:
+        logger.warning(
+            f"❌ Structural redundancy detected: {len(xyz_by_sha)} unique SHAs vs {len(xyz_by_argone_rel)} unique argonne_rels "
+            f"({len(confirmed_duplicates_by_sha)} confirmed duplicate SHAs, {len(xyz_dups_by_rel)} duplicate argonne_rels)."
+        )
+    elif len(xyz_by_sha) != len(xyz_by_argone_rel):
+        logger.info(
+            f"ℹ️ Structural alignment note: {len(xyz_by_sha)} unique SHAs vs {len(xyz_by_argone_rel)} unique argonne_rels "
+            f"(accounted for by {len(distinct_states_by_sha)} multi-state geometries with differing species or charge)."
         )
 
+    if confirmed_duplicates_by_sha or xyz_dups_by_rel or distinct_states_by_sha:
         def get_dump_entry(at):
             info = dict(at.info)
             rel = info.get("argonne_rel")
             pq_row = parquet_by_argone_rel.get(rel)
             pq_data = pq_row.to_dict() if pq_row is not None else None
-            return {"xyz": info, "parquet": pq_data}
+            return {
+                "argonne_rel": rel,
+                "species": list(at.get_chemical_symbols()),
+                "charge": get_structure_charge(at, pq_row),
+                "xyz": info,
+                "parquet": pq_data,
+            }
 
         duplicates = {
+            "confirmed_duplicates": {
+                s: [get_dump_entry(at) for at in atoms]
+                for s, atoms in confirmed_duplicates_by_sha.items()
+            },
+            "distinct_states_by_sha": {
+                s: [get_dump_entry(at) for at in atoms]
+                for s, atoms in distinct_states_by_sha.items()
+            },
             "by_sha": {
                 s: [get_dump_entry(at) for at in atoms]
-                for s, atoms in xyz_by_sha_list.items()
-                if len(atoms) > 1
+                for s, atoms in confirmed_duplicates_by_sha.items()
             },
             "by_argonne_rel": {
                 r: [get_dump_entry(at) for at in atoms]
-                for r, atoms in xyz_by_argone_rel_list.items()
-                if len(atoms) > 1
+                for r, atoms in xyz_dups_by_rel.items()
             },
         }
 
-        dup_file = f"duplicates_{args.parquet.stem}.json"
+        dup_file = args.parquet.parent / f"duplicates_{args.parquet.stem}.json"
         with open(dup_file, "w") as f:
             json.dump(duplicates, f, indent=4, default=str)
-        logger.info(f"Dumped duplicates to '{dup_file}'.")
+        if confirmed_duplicates_by_sha or xyz_dups_by_rel:
+            logger.info(f"Dumped duplicates to '{dup_file}'.")
+        else:
+            logger.info(f"Dumped SHA state breakdown to '{dup_file}'.")
 
     pq_keys = set(parquet_by_sha.keys())
     xyz_keys = set(xyz_by_sha.keys())
@@ -220,6 +377,42 @@ def main() -> None:
         else:
             raise ValueError(
                 f"Expected dict or list in '{args.json_file}', got {type(json_data).__name__}."
+            )
+
+        num_json = len(json_keys)
+        num_pq = len(pq_argonne_rels)
+        num_xyz = len(xyz_argonne_rels)
+
+        if num_json > num_pq and num_json > num_xyz:
+            logger.warning(
+                f"⚠️ JSON file contains more keys than Parquet and ExtXYZ: "
+                f"{num_json} in JSON vs {num_pq} in Parquet and {num_xyz} in ExtXYZ "
+                f"(surplus: {num_json - num_pq} vs Parquet, {num_json - num_xyz} vs ExtXYZ)."
+            )
+        if num_json > num_pq:
+            logger.warning(
+                f"⚠️ JSON file contains more keys than Parquet records: "
+                f"{num_json} JSON keys vs {num_pq} Parquet records "
+                f"({num_json - num_pq} surplus keys in JSON)."
+            )
+        elif num_json < num_pq:
+            logger.warning(
+                f"⚠️ Parquet records contain more keys than JSON: "
+                f"{num_pq} Parquet records vs {num_json} JSON keys "
+                f"({num_pq - num_json} surplus records in Parquet)."
+            )
+
+        if num_json > num_xyz:
+            logger.warning(
+                f"⚠️ JSON file contains more keys than ExtXYZ structures: "
+                f"{num_json} JSON keys vs {num_xyz} ExtXYZ structures "
+                f"({num_json - num_xyz} surplus keys in JSON)."
+            )
+        elif num_json < num_xyz:
+            logger.warning(
+                f"⚠️ ExtXYZ structures contain more keys than JSON: "
+                f"{num_xyz} ExtXYZ structures vs {num_json} JSON keys "
+                f"({num_xyz - num_json} surplus structures in ExtXYZ)."
             )
 
         missing_in_pq_from_json = json_keys - pq_argonne_rels

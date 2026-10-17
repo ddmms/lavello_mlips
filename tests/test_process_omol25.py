@@ -1,14 +1,12 @@
 import io
 import json
-import logging
 import math
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tarfile
-from unittest.mock import MagicMock, patch
-import warnings
+from unittest.mock import patch
 
 from ase import Atoms
 import ase.io
