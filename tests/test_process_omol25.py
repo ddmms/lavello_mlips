@@ -1637,4 +1637,162 @@ def test_cli_merge_chunks_flag(tmp_path):
     assert df_res.iloc[0]["argonne_rel"] == "m1/"
 
 
+def test_merge_chunks_unifies_rank_parts_without_start_index(tmp_path):
+    """
+    Test merge_chunks unifies rank part files (e.g. props_rna_0_part_0.parquet,
+    props_rna_1_part_0.parquet) generated when runs are performed without --start-index.
+    """
+    from lavello_mlips.process_omol25 import merge_chunks
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "rna_prefix.json"
+
+    data = {
+        "rna_0/": {"key": "d0.tar.zst", "processed": False},
+        "rna_1/": {"key": "d1.tar.zst", "processed": False},
+        "rna_2/": {"key": "d2.tar.zst", "processed": False},
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Rank 0 Part 0: rna_0
+    df0 = pd.DataFrame([{"argonne_rel": "rna_0/", "data_id": 0, "energy": -1.0}])
+    df0.to_parquet(output_dir / "props_rna_0_part_0.parquet", index=False)
+    at0 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at0.info = {"argonne_rel": "rna_0/", "data_id": 0}
+    ase.io.write(str(output_dir / "structs_rna_0_part_0.xyz"), [at0], format="extxyz")
+
+    # Rank 1 Part 0: rna_1
+    df1 = pd.DataFrame([{"argonne_rel": "rna_1/", "data_id": 1, "energy": -2.0}])
+    df1.to_parquet(output_dir / "props_rna_1_part_0.parquet", index=False)
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at1.info = {"argonne_rel": "rna_1/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_rna_1_part_0.xyz"), [at1], format="extxyz")
+
+    # Rank 1 Part 1: rna_2
+    df2 = pd.DataFrame([{"argonne_rel": "rna_2/", "data_id": 2, "energy": -3.0}])
+    df2.to_parquet(output_dir / "props_rna_1_part_1.parquet", index=False)
+    at2 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.76]])
+    at2.info = {"argonne_rel": "rna_2/", "data_id": 2}
+    ase.io.write(str(output_dir / "structs_rna_1_part_1.xyz"), [at2], format="extxyz")
+
+    # Execute merge_chunks with delete_chunks=True
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq == output_dir / "props_rna.parquet"
+    assert final_xyz == output_dir / "structs_rna.xyz"
+    assert final_rst == tmp_path / "rna_prefix_restart.json"
+
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    assert final_rst.exists()
+
+    df_merged = pd.read_parquet(final_pq)
+    assert len(df_merged) == 3
+    assert set(df_merged["argonne_rel"]) == {"rna_0/", "rna_1/", "rna_2/"}
+
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+    assert len(atoms_merged) == 3
+    assert {at.info["argonne_rel"] for at in atoms_merged} == {"rna_0/", "rna_1/", "rna_2/"}
+
+    with open(final_rst) as f:
+        rst_data = json.load(f)
+    assert len(rst_data) == 3
+    assert all(v["processed"] for v in rst_data.values())
+
+    # Check that part files were deleted
+    assert not (output_dir / "props_rna_0_part_0.parquet").exists()
+    assert not (output_dir / "props_rna_1_part_0.parquet").exists()
+    assert not (output_dir / "props_rna_1_part_1.parquet").exists()
+    assert not (output_dir / "structs_rna_0_part_0.xyz").exists()
+    assert not (output_dir / "structs_rna_1_part_0.xyz").exists()
+    assert not (output_dir / "structs_rna_1_part_1.xyz").exists()
+
+
+def test_merge_chunks_prunes_mismatched_argonne_rel_and_resets_restart(tmp_path):
+    """
+    Test that merge_chunks prunes records with mismatched argonne_rel between Parquet and ExtXYZ,
+    enforces exact sequence and equality between them, and resets processed=False in restart JSON
+    for any mismatched entries.
+    """
+    from lavello_mlips.process_omol25 import merge_chunks
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "rna_prefix.json"
+
+    # Base dataset with 4 structures
+    data = {
+        "rna_0/": {"key": "d0.tar.zst", "processed": False},
+        "rna_1/": {"key": "d1.tar.zst", "processed": False},
+        "rna_2/": {"key": "d2.tar.zst", "processed": False},
+        "rna_3/": {"key": "d3.tar.zst", "processed": False},
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Chunk restart file where all 4 were optimistically marked processed
+    chunk_rst = tmp_path / "rna_prefix_0_4_restart.json"
+    chunk_data = {
+        "rna_0/": {"key": "d0.tar.zst", "processed": True},
+        "rna_1/": {"key": "d1.tar.zst", "processed": True},
+        "rna_2/": {"key": "d2.tar.zst", "processed": True},
+        "rna_3/": {"key": "d3.tar.zst", "processed": True},
+    }
+    with open(chunk_rst, "w", encoding="utf-8") as f:
+        json.dump(chunk_data, f)
+
+    # Parquet chunk contains rna_0, rna_1, and rna_2 (missing rna_3)
+    df = pd.DataFrame([
+        {"argonne_rel": "rna_0/", "data_id": 0, "energy": -1.0},
+        {"argonne_rel": "rna_1/", "data_id": 1, "energy": -2.0},
+        {"argonne_rel": "rna_2/", "data_id": 2, "energy": -3.0},
+    ])
+    df.to_parquet(output_dir / "props_rna_0_4.parquet", index=False)
+
+    # ExtXYZ chunk contains rna_0, rna_1, and rna_3 (missing rna_2)
+    at0 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at0.info = {"argonne_rel": "rna_0/", "data_id": 0}
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at1.info = {"argonne_rel": "rna_1/", "data_id": 1}
+    at3 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.77]])
+    at3.info = {"argonne_rel": "rna_3/", "data_id": 3}
+    ase.io.write(str(output_dir / "structs_rna_0_4.xyz"), [at0, at1, at3], format="extxyz")
+
+    # Run merge_chunks
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq == output_dir / "props_rna.parquet"
+    assert final_xyz == output_dir / "structs_rna.xyz"
+    assert final_rst == tmp_path / "rna_prefix_restart.json"
+
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    assert final_rst.exists()
+
+    # Verify Parquet and ExtXYZ only contain rna_0 and rna_1 (intersection)
+    df_merged = pd.read_parquet(final_pq)
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+
+    assert len(df_merged) == 2
+    assert len(atoms_merged) == 2
+    assert list(df_merged["argonne_rel"]) == ["rna_0/", "rna_1/"]
+    assert [at.info["argonne_rel"] for at in atoms_merged] == ["rna_0/", "rna_1/"]
+
+    # Verify restart file marked rna_0/rna_1 as True, and rna_2/rna_3 as False
+    with open(final_rst) as f:
+        rst_data = json.load(f)
+
+    assert rst_data["rna_0/"]["processed"] is True
+    assert rst_data["rna_1/"]["processed"] is True
+    assert rst_data["rna_2/"]["processed"] is False
+    assert rst_data["rna_3/"]["processed"] is False
+
+    # Intermediate chunks and chunk restart deleted
+    assert not (output_dir / "props_rna_0_4.parquet").exists()
+    assert not (output_dir / "structs_rna_0_4.xyz").exists()
+    assert not chunk_rst.exists()
+
+
+
+
 
