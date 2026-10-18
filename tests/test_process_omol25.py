@@ -1854,6 +1854,73 @@ def test_merge_chunks_drops_file_missing_extxyz_partner_and_continues(tmp_path):
     assert rst_data["m_orphan/"]["processed"] is False
 
 
+def test_merge_chunks_drops_bad_frame_from_extxyz_and_parquet(tmp_path):
+    """
+    Test that when an ExtXYZ chunk has a corrupted/truncated frame
+    (e.g. Frame has 0 atoms, expected 210, raising XYZError),
+    merge_chunks does NOT crash. Instead, the corrupted frame is dropped,
+    valid frames are recovered, the corrupted frame is pruned from the corresponding Parquet,
+    and its processed status in the restart JSON is set to False.
+    """
+    from lavello_mlips.process_omol25 import merge_chunks
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "badframe_prefix.json"
+
+    data = {
+        "mol_1/": {"key": "m1.tar.zst", "processed": False},
+        "mol_bad/": {"key": "mbad.tar.zst", "processed": False},
+        "mol_3/": {"key": "m3.tar.zst", "processed": False},
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Parquet file has records for mol_1, mol_bad, and mol_3
+    df = pd.DataFrame([
+        {"argonne_rel": "mol_1/", "data_id": 1, "energy": -1.0},
+        {"argonne_rel": "mol_bad/", "data_id": 2, "energy": -2.0},
+        {"argonne_rel": "mol_3/", "data_id": 3, "energy": -3.0},
+    ])
+    df.to_parquet(output_dir / "props_badframe_0_3.parquet", index=False)
+
+    # ExtXYZ file has valid mol_1, corrupted mol_bad (0 atoms, expected 210), and valid mol_3
+    s_xyz = (
+        "2\nProperties=species:S:1:pos:R:3 argonne_rel=mol_1/ data_id=1\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n"
+        "210\nProperties=species:S:1:pos:R:3 argonne_rel=mol_bad/ data_id=2\n"
+        "2\nProperties=species:S:1:pos:R:3 argonne_rel=mol_3/ data_id=3\nO 0.0 0.0 0.0\nO 0.0 0.0 1.2\n"
+    )
+    xyz_path = output_dir / "structs_badframe_0_3.xyz"
+    xyz_path.write_text(s_xyz, encoding="utf-8")
+
+    # Run merge_chunks
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq == output_dir / "props_badframe.parquet"
+    assert final_xyz == output_dir / "structs_badframe.xyz"
+    assert final_rst == tmp_path / "badframe_prefix_restart.json"
+
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    assert final_rst.exists()
+
+    # The bad frame must be dropped from BOTH Parquet and ExtXYZ
+    df_merged = pd.read_parquet(final_pq)
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+
+    assert len(df_merged) == 2
+    assert len(atoms_merged) == 2
+    assert list(df_merged["argonne_rel"]) == ["mol_1/", "mol_3/"]
+    assert [at.info["argonne_rel"] for at in atoms_merged] == ["mol_1/", "mol_3/"]
+
+    # In restart JSON, mol_1/ and mol_3/ are True, mol_bad/ is False
+    with open(final_rst) as f:
+        rst_data = json.load(f)
+    assert rst_data["mol_1/"]["processed"] is True
+    assert rst_data["mol_3/"]["processed"] is True
+    assert rst_data["mol_bad/"]["processed"] is False
+
+
+
 
 
 

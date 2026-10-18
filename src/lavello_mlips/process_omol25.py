@@ -57,6 +57,82 @@ TAG_RESULT = 5
 logger = logging.getLogger(__name__)
 logging.captureWarnings(True)
 
+
+def safe_read_extxyz(path: Union[str, Path]) -> List[Any]:
+    """
+    Safely reads an ExtXYZ file into a list of Atoms objects.
+    If a frame is corrupted or truncated (e.g. XYZError: Frame has 0 atoms, expected 210),
+    gracefully recovers all valid frames from the file, discarding corrupted frames.
+    """
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+
+    # Fast path: try standard ASE read
+    try:
+        atoms = read(str(path), index=":", format="extxyz")
+        if not isinstance(atoms, list):
+            atoms = [atoms] if atoms else []
+        valid_atoms = [at for at in atoms if len(at) > 0]
+        if len(valid_atoms) == len(atoms):
+            return valid_atoms
+    except Exception as e_fast:
+        logger.warning(
+            f"Standard ExtXYZ read failed for {path.name} ({e_fast}). Attempting robust frame-by-frame recovery..."
+        )
+
+    # Robust fallback: line-by-line frame recovery
+    frames = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        i = 0
+        n_lines = len(lines)
+        header_re = re.compile(r"^\s*(\d+)\s*$")
+        dropped_count = 0
+
+        while i < n_lines:
+            m = header_re.match(lines[i])
+            if not m:
+                i += 1
+                continue
+
+            natoms = int(m.group(1))
+            if natoms <= 0:
+                i += 1
+                continue
+
+            if i + 1 + natoms >= n_lines:
+                # Truncated frame (e.g. at EOF)
+                dropped_count += 1
+                i += 1
+                continue
+
+            chunk_lines = lines[i : i + 2 + natoms]
+            chunk_str = "".join(chunk_lines)
+            try:
+                at = read(StringIO(chunk_str), format="extxyz")
+                if len(at) == natoms:
+                    frames.append(at)
+                    i += 2 + natoms
+                else:
+                    dropped_count += 1
+                    i += 1
+            except Exception:
+                dropped_count += 1
+                i += 1
+
+        if dropped_count > 0:
+            logger.warning(
+                f"ExtXYZ file {path.name}: recovered {len(frames)} valid frames, dropped {dropped_count} bad/truncated frame(s)."
+            )
+    except Exception as e_fallback:
+        logger.error(f"Fallback ExtXYZ recovery failed for {path.name}: {e_fallback}", exc_info=True)
+
+    return frames
+
+
 # ---------- dipole ----------
 RE_DIP = re.compile(
     r"Total\s+Dipole\s+Moment(?:\s*\((a\.u\.|Debye)\))?\s*:\s*"
@@ -954,9 +1030,7 @@ class OmolDataProcessor(S3DataProcessor):
                         continue
 
                     try:
-                        atoms_list = read(str(xyz_file), index=":")
-                        if not isinstance(atoms_list, list):
-                            atoms_list = [atoms_list] if atoms_list else []
+                        atoms_list = safe_read_extxyz(xyz_file)
                     except Exception as e_xyz:
                         logger.warning(f"Discarding corrupt ExtXYZ {xyz_file.name}: {e_xyz}")
                         pf.unlink(missing_ok=True)
@@ -1526,9 +1600,7 @@ class OmolDataProcessor(S3DataProcessor):
                 partner_xyz = pf.parent / pf.name.replace("props_", "structs_").replace(".parquet", ".xyz")
                 if partner_xyz.exists():
                     try:
-                        partner_atoms = read(str(partner_xyz), index=":")
-                        if not isinstance(partner_atoms, list):
-                            partner_atoms = [partner_atoms]
+                        partner_atoms = safe_read_extxyz(partner_xyz)
                         for at in partner_atoms:
                             k = at.info.get("argonne_rel")
                             if k:
@@ -1543,9 +1615,7 @@ class OmolDataProcessor(S3DataProcessor):
         all_atoms = []
         if self.restart and output_xyz_final.exists():
             try:
-                prev_atoms = read(str(output_xyz_final), index=":")
-                if not isinstance(prev_atoms, list):
-                    prev_atoms = [prev_atoms]
+                prev_atoms = safe_read_extxyz(output_xyz_final)
                 all_atoms.extend(prev_atoms)
                 existing_xyz_keys = {
                     at.info.get("argonne_rel")
@@ -1571,9 +1641,7 @@ class OmolDataProcessor(S3DataProcessor):
         successful_xfs = []
         for xf in tqdm(xyz_parts, desc="Merging ExtXYZ parts", disable=len(xyz_parts) == 0):
             try:
-                atoms_part = read(str(xf), index=":")
-                if not isinstance(atoms_part, list):
-                    atoms_part = [atoms_part]
+                atoms_part = safe_read_extxyz(xf)
                 all_atoms.extend(atoms_part)
                 successful_xfs.append(xf)
             except Exception as e:
@@ -1942,9 +2010,7 @@ def merge_chunks(
     all_atoms = []
     if final_xyz.exists():
         try:
-            prev_atoms = read(str(final_xyz), index=":")
-            if not isinstance(prev_atoms, list):
-                prev_atoms = [prev_atoms]
+            prev_atoms = safe_read_extxyz(final_xyz)
             all_atoms.extend(prev_atoms)
         except Exception as e:
             logger.warning(f"Could not read existing final ExtXYZ {final_xyz}: {e}")
@@ -1952,13 +2018,10 @@ def merge_chunks(
     xyz_files = [it["xf"] for it in items]
     for xf in tqdm(xyz_files, desc="Reading ExtXYZ chunks/parts"):
         try:
-            atoms_part = read(str(xf), index=":")
-            if not isinstance(atoms_part, list):
-                atoms_part = [atoms_part]
+            atoms_part = safe_read_extxyz(xf)
             all_atoms.extend(atoms_part)
         except Exception as e:
-            logger.error(f"Failed to read ExtXYZ file {xf}: {e}", exc_info=True)
-            raise
+            logger.warning(f"Failed to read ExtXYZ file {xf}: {e}. Skipping unreadable frames.")
 
     xyz_keys = {
         at.info.get("argonne_rel")
