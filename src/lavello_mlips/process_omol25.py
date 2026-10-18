@@ -1831,6 +1831,7 @@ def merge_chunks(
         return None, None, None
 
     items = []
+    dropped_keys = set()
     for pf in output_dir.iterdir():
         if not pf.is_file() or pf.name.endswith(".tmp") or pf == final_pq:
             continue
@@ -1863,9 +1864,18 @@ def merge_chunks(
 
         xf = pf.parent / pf.name.replace("props_", "structs_").replace(".parquet", ".xyz")
         if not xf.exists():
-            raise FileNotFoundError(
-                f"Missing ExtXYZ partner {xf.name} for chunk Parquet {pf.name}"
+            logger.warning(
+                f"Missing ExtXYZ partner {xf.name} for chunk Parquet {pf.name}. "
+                f"Dropping {pf.name} and continuing with the rest that match."
             )
+            try:
+                df_orphan = pd.read_parquet(pf, columns=["argonne_rel"])
+                if "argonne_rel" in df_orphan.columns:
+                    dropped_keys.update(df_orphan["argonne_rel"].dropna().unique())
+            except Exception:
+                pass
+            pf.unlink(missing_ok=True)
+            continue
 
         items.append({
             "pf": pf,
@@ -2049,12 +2059,13 @@ def merge_chunks(
             if k in base_data and isinstance(base_data[k], dict):
                 base_data[k]["processed"] = True
 
-    # Reset any mismatched structures to processed=False so they can be re-processed
-    if mismatched_keys:
-        for k in mismatched_keys:
+    # Reset any mismatched or dropped structures to processed=False so they can be re-processed
+    unmerged_keys = mismatched_keys | dropped_keys
+    if unmerged_keys:
+        for k in unmerged_keys:
             if k in base_data and isinstance(base_data[k], dict):
                 logger.warning(
-                    f"Setting processed=False for '{k}' in consolidated restart file due to Parquet/ExtXYZ mismatch."
+                    f"Setting processed=False for '{k}' in consolidated restart file due to Parquet/ExtXYZ mismatch or missing partner."
                 )
                 base_data[k]["processed"] = False
 

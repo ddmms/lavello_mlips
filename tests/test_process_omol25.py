@@ -1793,6 +1793,68 @@ def test_merge_chunks_prunes_mismatched_argonne_rel_and_resets_restart(tmp_path)
     assert not chunk_rst.exists()
 
 
+def test_merge_chunks_drops_file_missing_extxyz_partner_and_continues(tmp_path):
+    """
+    Test that when an intermediate Parquet part file has no partner ExtXYZ file
+    (e.g. structs_scaled_separations_exp_16_part_6.xyz is missing for props_scaled_separations_exp_16_part_6.parquet),
+    merge_chunks does NOT raise FileNotFoundError. Instead it drops the unmatched file,
+    resets its keys to processed=False in the restart JSON, and merges the rest that match.
+    """
+    from lavello_mlips.process_omol25 import merge_chunks
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "scaled_separations_exp_prefix.json"
+
+    data = {
+        "m_good/": {"key": "good.tar.zst", "processed": False},
+        "m_orphan/": {"key": "orphan.tar.zst", "processed": False},
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Matching pair: rank 16 part 5
+    df_good = pd.DataFrame([{"argonne_rel": "m_good/", "data_id": 1, "energy": -10.0}])
+    df_good.to_parquet(output_dir / "props_scaled_separations_exp_16_part_5.parquet", index=False)
+    at_good = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at_good.info = {"argonne_rel": "m_good/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_scaled_separations_exp_16_part_5.xyz"), [at_good], format="extxyz")
+
+    # Orphan parquet without matching ExtXYZ: rank 16 part 6
+    orphan_pq = output_dir / "props_scaled_separations_exp_16_part_6.parquet"
+    df_orphan = pd.DataFrame([{"argonne_rel": "m_orphan/", "data_id": 2, "energy": -20.0}])
+    df_orphan.to_parquet(orphan_pq, index=False)
+    # Notice: structs_scaled_separations_exp_16_part_6.xyz is intentionally NOT created!
+
+    # Execute merge_chunks
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq == output_dir / "props_scaled_separations_exp.parquet"
+    assert final_xyz == output_dir / "structs_scaled_separations_exp.xyz"
+    assert final_rst == tmp_path / "scaled_separations_exp_prefix_restart.json"
+
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    assert final_rst.exists()
+
+    # The orphan file must have been dropped (and unlinked)
+    assert not orphan_pq.exists()
+
+    # Merged files must contain only the matching structures (m_good)
+    df_merged = pd.read_parquet(final_pq)
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+    assert len(df_merged) == 1
+    assert len(atoms_merged) == 1
+    assert df_merged.iloc[0]["argonne_rel"] == "m_good/"
+    assert atoms_merged[0].info["argonne_rel"] == "m_good/"
+
+    # Restart JSON must have m_good/ as True, and m_orphan/ reset to False
+    with open(final_rst) as f:
+        rst_data = json.load(f)
+    assert rst_data["m_good/"]["processed"] is True
+    assert rst_data["m_orphan/"]["processed"] is False
+
+
+
 
 
 
