@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--start-index",
         type=int,
-        default=0,
+        default=None,
         help="The starting index (inclusive) of the dataset to process.",
     )
     parser.add_argument(
@@ -98,6 +98,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional local directory to read data from instead of S3.",
     )
     parser.add_argument("--mpi", action="store_true", help="Run using MPI.")
+    parser.add_argument(
+        "--merge-chunks",
+        action="store_true",
+        help="Merge all completed chunk files (props_*_*_*.parquet, structs_*_*_*.xyz) into final unified dataset.",
+    )
+    parser.add_argument(
+        "--delete-chunks",
+        action="store_true",
+        help="Delete chunk files after successful merge when --merge-chunks is used.",
+    )
     return parser.parse_args()
 
 
@@ -110,6 +120,27 @@ def main() -> None:
     """
     args = parse_args()
 
+    log_level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+
+    if getattr(args, "merge_chunks", False):
+        setup_logging(
+            level=log_level_map.get(args.log_level.upper(), logging.INFO),
+            log_file_path=args.log_file,
+        )
+        from .process_omol25 import merge_chunks
+        merge_chunks(
+            args.data_source,
+            args.output_dir,
+            delete_chunks=getattr(args, "delete_chunks", False),
+        )
+        return
+
     # Determine rank early for logging setup
     if args.mpi:
         comm = mpi.COMM_WORLD
@@ -120,23 +151,10 @@ def main() -> None:
         rank = 0
         size = 1
 
-    log_level_map = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "CRITICAL": logging.CRITICAL,
-    }
-
-    logfile = (
-        args.log_file if args.log_file else Path(args.data_source.stem + ".log")
-    )
-    args.log_file = logfile
-
     if rank == 0:
         setup_logging(
             level=log_level_map.get(args.log_level.upper(), logging.INFO),
-            log_file_path=logfile,
+            log_file_path=args.log_file,
         )
 
     if args.mpi:

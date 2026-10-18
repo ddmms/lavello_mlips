@@ -10,6 +10,7 @@ import json
 import logging
 import math
 from pathlib import Path
+import re
 from typing import Optional
 
 from ase.io import iread
@@ -185,6 +186,13 @@ def main() -> None:
             f"{stem}.json",
             f"{raw_prefix}.json",
         ]
+        m_chunk = re.match(r"^(.*?)_(\d+)_(\d+)$", raw_prefix)
+        if m_chunk:
+            base_part = m_chunk.group(1)
+            c_start = m_chunk.group(2)
+            c_end = m_chunk.group(3)
+            candidate_names.insert(0, f"{base_part}_prefix_{c_start}_{c_end}_restart.json")
+            candidate_names.insert(1, f"{base_part}_{c_start}_{c_end}_restart.json")
         search_dirs = [args.parquet.parent]
         cwd = Path.cwd()
         if cwd not in search_dirs:

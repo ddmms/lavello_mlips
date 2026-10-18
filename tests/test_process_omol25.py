@@ -1220,3 +1220,316 @@ def test_unique_temp_prefix_mpi(tmp_path, monkeypatch):
     assert created_dir_name[0].startswith(f"orca2json_rank3_pid{pid}_")
 
 
+def test_chunked_runs_no_file_collision_and_restart(tmp_path):
+    """
+    Verify that two concurrent/sequential chunked jobs with disjoint ranges
+    (--start-index 0 --sample-size 3 vs --start-index 3 --sample-size 3)
+    writing to the same output directory do not overwrite each other's files,
+    and that resuming an interrupted chunk with --restart correctly recovers.
+    """
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    local_data_dir = tmp_path / "mock_s3"
+    data_source = tmp_path / "omol_prefix.json"
+
+    # Create dataset with 6 molecules
+    prefixes = [f"mol_{i}/" for i in range(6)]
+    data = {p: {"key": "data.tar.zst", "processed": False} for p in prefixes}
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    create_mock_data(local_data_dir, data_source)
+
+    class Args:
+        def __init__(self, start_idx, sample_sz, restart=False):
+            self.data_source = data_source
+            self.output_dir = output_dir
+            self.local_dir = local_data_dir
+            self.login_file = None
+            self.bucket = None
+            self.start_index = start_idx
+            self.sample_size = sample_sz
+            self.restart = restart
+            self.batch_size = 2
+            self.memory_threshold_gb = 10.0
+            self.mpi = False
+            self.log_file = None
+
+    # --- Job 1: chunk [0, 3] ---
+    args1 = Args(0, 3)
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        proc1 = OmolDataProcessor(args1, rank=0, size=1, comm=None)
+        assert proc1.group_name == "omol_0_3"
+        proc1.run_serial()
+
+    # --- Job 2: chunk [3, 6] ---
+    args2 = Args(3, 3)
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        proc2 = OmolDataProcessor(args2, rank=0, size=1, comm=None)
+        assert proc2.group_name == "omol_3_6"
+        proc2.run_serial()
+
+    # 1. Check final files exist independently without overwriting
+    pq1 = output_dir / "props_omol_0_3.parquet"
+    xyz1 = output_dir / "structs_omol_0_3.xyz"
+    rst1 = data_source.with_name("omol_prefix_0_3_restart.json")
+
+    pq2 = output_dir / "props_omol_3_6.parquet"
+    xyz2 = output_dir / "structs_omol_3_6.xyz"
+    rst2 = data_source.with_name("omol_prefix_3_6_restart.json")
+
+    assert pq1.exists() and xyz1.exists() and rst1.exists()
+    assert pq2.exists() and xyz2.exists() and rst2.exists()
+
+    df1 = pd.read_parquet(pq1)
+    df2 = pd.read_parquet(pq2)
+    assert set(df1["argonne_rel"]) == {"mol_0/", "mol_1/", "mol_2/"}
+    assert set(df2["argonne_rel"]) == {"mol_3/", "mol_4/", "mol_5/"}
+
+    with open(rst1, "r") as f:
+        rst1_data = json.load(f)
+    with open(rst2, "r") as f:
+        rst2_data = json.load(f)
+
+    assert set(rst1_data.keys()) == {"mol_0/", "mol_1/", "mol_2/"}
+    assert set(rst2_data.keys()) == {"mol_3/", "mol_4/", "mol_5/"}
+    assert all(v["processed"] for v in rst1_data.values())
+    assert all(v["processed"] for v in rst2_data.values())
+
+    # --- Test Restart on an interrupted chunk ---
+    # Setup another chunk [0, 4] where only 2 items are processed before interruption
+    data_source_int = tmp_path / "interrupted_prefix.json"
+    int_prefixes = [f"imol_{i}/" for i in range(6)]
+    int_data = {p: {"key": "data.tar.zst", "processed": False} for p in int_prefixes}
+    with open(data_source_int, "w", encoding="utf-8") as f:
+        json.dump(int_data, f)
+    create_mock_data(local_data_dir, data_source_int)
+
+    # Initial partial run: simulate processing only first 2 items of [0, 4]
+    args_int1 = Args(0, 4)
+    args_int1.data_source = data_source_int
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        proc_int1 = OmolDataProcessor(args_int1, rank=0, size=1, comm=None)
+        assert proc_int1.group_name == "interrupted_0_4"
+        # Process only task 0 and 1
+        res0 = proc_int1.process_single(0, None)
+        res1 = proc_int1.process_single(1, None)
+        proc_int1.flush_recs([res0[0], res1[0]], [res0[1], res1[1]])
+        proc_int1.data["imol_0/"]["processed"] = True
+        proc_int1.data["imol_1/"]["processed"] = True
+        proc_int1._save_restart_file()
+
+    # Verify restart file of interrupted run has 2 processed, 2 unprocessed
+    rst_int = data_source_int.with_name("interrupted_prefix_0_4_restart.json")
+    assert rst_int.exists()
+    with open(rst_int, "r") as f:
+        d_saved = json.load(f)
+    assert d_saved["imol_0/"]["processed"] is True
+    assert d_saved["imol_1/"]["processed"] is True
+    assert d_saved["imol_2/"]["processed"] is False
+    assert d_saved["imol_3/"]["processed"] is False
+
+    # Now restart the job with --restart --start-index 0 --sample-size 4
+    args_int2 = Args(0, 4, restart=True)
+    args_int2.data_source = data_source_int
+    with patch("lavello_mlips.process_omol25.OmolDataProcessor.get_s3_client", return_value=None):
+        proc_int2 = OmolDataProcessor(args_int2, rank=0, size=1, comm=None)
+        # Prefixes should only contain the 2 unprocessed items
+        assert proc_int2.prefixes == ["imol_2/", "imol_3/"]
+        assert proc_int2.indices_to_process == [0, 1]
+        proc_int2.run_serial()
+
+    # After restart finishes, verify all 4 items are in final output and restart file
+    final_pq_int = output_dir / "props_interrupted_0_4.parquet"
+    final_xyz_int = output_dir / "structs_interrupted_0_4.xyz"
+    assert final_pq_int.exists()
+    assert final_xyz_int.exists()
+
+    df_int = pd.read_parquet(final_pq_int)
+    assert len(df_int) == 4
+    assert set(df_int["argonne_rel"]) == {"imol_0/", "imol_1/", "imol_2/", "imol_3/"}
+
+    with open(rst_int, "r") as f:
+        d_final = json.load(f)
+    assert all(v["processed"] for v in d_final.values())
+
+
+def test_download_chunked_runs_no_file_collision_and_restart(tmp_path, monkeypatch):
+    """
+    Verify download_omol25 chunked runs with disjoint ranges
+    do not collide on restart files and rerunning with --restart works.
+    """
+    from lavello_mlips.download_omol25 import main as download_main
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    local_data_dir = tmp_path / "mock_s3_dl"
+    data_source = tmp_path / "dl_prefix.json"
+
+    prefixes = [f"dmol_{i}/" for i in range(4)]
+    data = {p: {"key": "data.tar.zst", "processed": False} for p in prefixes}
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    create_mock_data(local_data_dir, data_source)
+
+    monkeypatch.chdir(dest_dir)
+
+    # Job 1: chunk [0, 2]
+    test_args1 = [
+        "download_omol25",
+        "--data-source", str(data_source),
+        "--local-dir", str(local_data_dir),
+        "--start-index", "0",
+        "--sample-size", "2"
+    ]
+    with patch.object(sys, "argv", test_args1):
+        download_main()
+
+    # Job 2: chunk [2, 4]
+    test_args2 = [
+        "download_omol25",
+        "--data-source", str(data_source),
+        "--local-dir", str(local_data_dir),
+        "--start-index", "2",
+        "--sample-size", "2"
+    ]
+    with patch.object(sys, "argv", test_args2):
+        download_main()
+
+    rst1 = data_source.with_name("dl_prefix_0_2_restart.json")
+    rst2 = data_source.with_name("dl_prefix_2_4_restart.json")
+    assert rst1.exists()
+    assert rst2.exists()
+
+    with open(rst1) as f:
+        d1 = json.load(f)
+    with open(rst2) as f:
+        d2 = json.load(f)
+
+    assert set(d1.keys()) == {"dmol_0/", "dmol_1/"}
+    assert set(d2.keys()) == {"dmol_2/", "dmol_3/"}
+    assert all(v["processed"] for v in d1.values())
+    assert all(v["processed"] for v in d2.values())
+
+
+def test_merge_chunks_unifies_parquets_xyz_and_restart(tmp_path):
+    """Test merge_chunks unifies disjoint chunk Parquet, ExtXYZ, and restart JSON files."""
+    from lavello_mlips.process_omol25 import merge_chunks
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "omol_prefix.json"
+
+    # Base data source
+    all_data = {
+        f"mol_{i}/": {"key": f"data_{i}.tar.zst", "processed": False} for i in range(4)
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(all_data, f)
+
+    # Chunk 1: [0, 2]
+    df1 = pd.DataFrame([
+        {"argonne_rel": "mol_0/", "data_id": 0, "energy": -10.0},
+        {"argonne_rel": "mol_1/", "data_id": 1, "energy": -20.0},
+    ])
+    df1.to_parquet(output_dir / "props_omol_0_2.parquet", index=False)
+    at0 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at0.info = {"argonne_rel": "mol_0/", "data_id": 0}
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at1.info = {"argonne_rel": "mol_1/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_omol_0_2.xyz"), [at0, at1], format="extxyz")
+
+    rst1_data = {
+        "mol_0/": {"key": "data_0.tar.zst", "processed": True},
+        "mol_1/": {"key": "data_1.tar.zst", "processed": True},
+    }
+    with open(data_source.with_name("omol_prefix_0_2_restart.json"), "w") as f:
+        json.dump(rst1_data, f)
+
+    # Chunk 2: [2, 4]
+    df2 = pd.DataFrame([
+        {"argonne_rel": "mol_2/", "data_id": 2, "energy": -30.0},
+        {"argonne_rel": "mol_3/", "data_id": 3, "energy": -40.0},
+    ])
+    df2.to_parquet(output_dir / "props_omol_2_4.parquet", index=False)
+    at2 = Atoms("O2", positions=[[0, 0, 0], [0, 0, 1.21]])
+    at2.info = {"argonne_rel": "mol_2/", "data_id": 2}
+    at3 = Atoms("O2", positions=[[0, 0, 0], [0, 0, 1.22]])
+    at3.info = {"argonne_rel": "mol_3/", "data_id": 3}
+    ase.io.write(str(output_dir / "structs_omol_2_4.xyz"), [at2, at3], format="extxyz")
+
+    rst2_data = {
+        "mol_2/": {"key": "data_2.tar.zst", "processed": True},
+        "mol_3/": {"key": "data_3.tar.zst", "processed": True},
+    }
+    with open(data_source.with_name("omol_prefix_2_4_restart.json"), "w") as f:
+        json.dump(rst2_data, f)
+
+    # Execute merge_chunks
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq == output_dir / "props_omol.parquet"
+    assert final_xyz == output_dir / "structs_omol.xyz"
+    assert final_rst == tmp_path / "omol_prefix_restart.json"
+
+    assert final_pq.exists()
+    assert final_xyz.exists()
+    assert final_rst.exists()
+
+    # Check Parquet content
+    df_merged = pd.read_parquet(final_pq)
+    assert len(df_merged) == 4
+    assert list(df_merged["argonne_rel"]) == ["mol_0/", "mol_1/", "mol_2/", "mol_3/"]
+
+    # Check ExtXYZ content
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+    assert len(atoms_merged) == 4
+    assert [at.info["argonne_rel"] for at in atoms_merged] == ["mol_0/", "mol_1/", "mol_2/", "mol_3/"]
+
+    # Check consolidated restart JSON
+    with open(final_rst) as f:
+        d_merged = json.load(f)
+    assert len(d_merged) == 4
+    assert all(v["processed"] for v in d_merged.values())
+
+    # Check chunk files were deleted since delete_chunks=True
+    assert not (output_dir / "props_omol_0_2.parquet").exists()
+    assert not (output_dir / "props_omol_2_4.parquet").exists()
+    assert not (output_dir / "structs_omol_0_2.xyz").exists()
+    assert not (output_dir / "structs_omol_2_4.xyz").exists()
+    assert not (tmp_path / "omol_prefix_0_2_restart.json").exists()
+    assert not (tmp_path / "omol_prefix_2_4_restart.json").exists()
+
+
+def test_cli_merge_chunks_flag(tmp_path):
+    """Test invoking lavello_mlips with --merge-chunks from CLI."""
+    from lavello_mlips.cli import main as cli_main
+    output_dir = tmp_path / "cli_outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "mydata_prefix.json"
+
+    data = {"m1/": {"key": "k1", "processed": False}}
+    with open(data_source, "w") as f:
+        json.dump(data, f)
+
+    df = pd.DataFrame([{"argonne_rel": "m1/", "data_id": 1, "energy": -5.0}])
+    df.to_parquet(output_dir / "props_mydata_0_1.parquet", index=False)
+    at = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at.info = {"argonne_rel": "m1/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_mydata_0_1.xyz"), [at], format="extxyz")
+
+    test_argv = [
+        "lavello_mlips",
+        "--data-source", str(data_source),
+        "--output-dir", str(output_dir),
+        "--merge-chunks",
+    ]
+    with patch.object(sys, "argv", test_argv):
+        cli_main()
+
+    assert (output_dir / "props_mydata.parquet").exists()
+    assert (output_dir / "structs_mydata.xyz").exists()
+    df_res = pd.read_parquet(output_dir / "props_mydata.parquet")
+    assert len(df_res) == 1
+    assert df_res.iloc[0]["argonne_rel"] == "m1/"
+
+
+

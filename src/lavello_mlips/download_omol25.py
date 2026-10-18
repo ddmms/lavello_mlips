@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 from io import BytesIO
@@ -42,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-size", type=int, default=-1, help="Number of samples to run."
     )
-    parser.add_argument("--start-index", type=int, default=0, help="Start index.")
+    parser.add_argument("--start-index", type=int, default=None, help="Start index.")
     parser.add_argument(
         "--restart",
         action="store_true",
@@ -173,6 +174,19 @@ def extract_buffer(buffer: BytesIO, x: str, k: str) -> None:
         raise
 
 
+def save_restart_file(restart_file: Union[str, Path], data: Dict[str, Any]) -> None:
+    """Atomically saves restart state to JSON."""
+    rf = Path(restart_file)
+    tmp_file = rf.with_name(f"{rf.name}.tmp")
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json_dump(data, f, indent=4)
+        tmp_file.replace(rf)
+    except Exception as e:
+        logger.error(f"Failed to write restart file {rf}: {e}")
+        tmp_file.unlink(missing_ok=True)
+
+
 def manager_loop(keys: List[str], data: Dict[str, Any], restart_file: Union[str, Path], comm: Any, size: int) -> None:
     """Rank 0 Dispatcher for downloads (Synchronous)."""
     start_time = time.time()
@@ -203,8 +217,7 @@ def manager_loop(keys: List[str], data: Dict[str, Any], restart_file: Union[str,
             pbar.update(1)
 
             if processed_count % 100 == 0:
-                with open(restart_file, "w") as f:
-                    json_dump(data, f, indent=4)
+                save_restart_file(restart_file, data)
         elif isinstance(msg, str):  # prefix (legacy string success)
             if msg in data:
                 data[msg]["processed"] = True
@@ -212,12 +225,10 @@ def manager_loop(keys: List[str], data: Dict[str, Any], restart_file: Union[str,
             pbar.update(1)
 
             if processed_count % 100 == 0:
-                with open(restart_file, "w") as f:
-                    json_dump(data, f, indent=4)
+                save_restart_file(restart_file, data)
 
     pbar.close()
-    with open(restart_file, "w") as f:
-        json_dump(data, f, indent=4)
+    save_restart_file(restart_file, data)
     logger.info(f"Download complete in {time.time() - start_time:.2f} seconds.")
 
 
@@ -310,24 +321,75 @@ def main() -> None:
         )
 
     with open(args.data_source, "r", encoding="utf-8") as f:
-        data = json_load(f)
+        full_data = json_load(f)
 
-    if args.data_source.name.endswith("_restart.json"):
+    all_keys = list(full_data.keys())
+    total_keys = len(all_keys)
+
+    is_restart_file = args.data_source.name.endswith("_restart.json")
+    if is_restart_file:
+        args.restart = True
+
+    stem = args.data_source.stem
+    stem_no_restart = stem[:-8] if stem.endswith("_restart") else stem
+    m_chunk = re.search(r"^(.*?)(?:_(\d+)_(\d+))$", stem_no_restart)
+    is_chunk = False
+    if m_chunk:
+        stem_base = m_chunk.group(1)
         restart_file = args.data_source
+        assigned_keys = all_keys
+        is_chunk = True
+    elif (
+        getattr(args, "start_index", None) is not None
+        and (args.start_index > 0 or (0 < getattr(args, "sample_size", -1) < total_keys))
+    ):
+        stem_base = stem_no_restart
+        start_idx = args.start_index
+        sample_size = getattr(args, "sample_size", -1)
+        if sample_size is None or sample_size < 0:
+            end_idx = total_keys
+        else:
+            end_idx = min(start_idx + sample_size, total_keys)
+        is_chunk = True
+        chunk_tag = f"_{start_idx}_{end_idx}"
+        restart_file = args.data_source.with_name(f"{stem_base}{chunk_tag}_restart.json")
+        if args.restart and restart_file.exists():
+            try:
+                with open(restart_file, "r", encoding="utf-8") as f_rst:
+                    saved_chunk_data = json_load(f_rst)
+                for k, v in saved_chunk_data.items():
+                    if k in full_data and isinstance(v, dict):
+                        full_data[k].update(v)
+            except Exception as e_rst:
+                logger.warning(f"Could not read restart file {restart_file}: {e_rst}")
+        assigned_keys = all_keys[start_idx : end_idx]
     else:
-        restart_file = args.data_source.with_name(
-            args.data_source.stem + "_restart.json"
-        )
+        stem_base = stem_no_restart
+        is_chunk = False
+        if is_restart_file:
+            restart_file = args.data_source
+        else:
+            restart_file = args.data_source.with_name(f"{stem_base}_restart.json")
+        if args.restart and not is_restart_file and restart_file.exists():
+            try:
+                with open(restart_file, "r", encoding="utf-8") as f_rst:
+                    saved_rst = json_load(f_rst)
+                for k, v in saved_rst.items():
+                    if k in full_data and isinstance(v, dict):
+                        full_data[k].update(v)
+            except Exception as e_rst:
+                logger.warning(f"Could not read restart file {restart_file}: {e_rst}")
+        assigned_keys = all_keys
+
+    data = {k: full_data[k] for k in assigned_keys}
 
     if args.restart:
         keys = [x for x in data if not data[x].get("processed", False)]
     else:
         keys = list(data.keys())
 
-    if args.sample_size > 0:
-        keys = keys[args.start_index : args.start_index + args.sample_size]
-    else:
-        keys = keys[args.start_index :]
+    if not is_chunk and getattr(args, "sample_size", -1) is not None and args.sample_size > 0:
+        keys = keys[: args.sample_size]
 
     if size > 1:
         if rank == 0:
@@ -336,8 +398,7 @@ def main() -> None:
             worker_loop(data, args, comm)
     else:
         download_serial(keys, data, args)
-        with open(restart_file, "w") as f:
-            json_dump(data, f, indent=4)
+        save_restart_file(restart_file, data)
 
 
 if __name__ == "__main__":

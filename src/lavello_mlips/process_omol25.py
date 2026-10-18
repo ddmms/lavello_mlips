@@ -13,7 +13,7 @@ import tempfile
 import time
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -745,10 +745,85 @@ class OmolDataProcessor(S3DataProcessor):
             signal.signal(signal.SIGUSR1, handle_signal)
 
         self.files_to_process = Path(args.data_source)
-        self.group_name = self.files_to_process.stem.replace("_prefix", "").replace(
-            "_restart", ""
-        )
+        is_restart_file = self.files_to_process.name.endswith("_restart.json")
+        if is_restart_file:
+            self.restart = True
+
+        if self.rank == 0:
+            logger.info(f"Initializing dataset from: {self.files_to_process.resolve()}")
+
+        with open(self.files_to_process, "r", encoding="utf-8") as f:
+            full_data = json_load(f)
+
+        all_keys = list(full_data.keys())
+        total_keys = len(all_keys)
+
+        stem = self.files_to_process.stem
+        stem_no_restart = stem[:-8] if stem.endswith("_restart") else stem
+        m_chunk = re.search(r"^(.*?)(?:_(\d+)_(\d+))$", stem_no_restart)
+        start_idx = getattr(args, "start_index", None)
+        sample_size = getattr(args, "sample_size", -1)
+        if sample_size is None:
+            sample_size = -1
+
+        if m_chunk:
+            stem_base = m_chunk.group(1)
+            chunk_start = int(m_chunk.group(2))
+            chunk_end = int(m_chunk.group(3))
+            is_chunk = True
+            chunk_tag = f"_{chunk_start}_{chunk_end}"
+            base_group = stem_base.replace("_prefix", "")
+            self.restart_file = self.files_to_process
+            assigned_keys = all_keys
+        elif start_idx is not None and (start_idx > 0 or (0 < sample_size < total_keys)):
+            stem_base = stem_no_restart
+            base_group = stem_base.replace("_prefix", "")
+            if sample_size < 0:
+                end_idx = total_keys
+            else:
+                end_idx = min(start_idx + sample_size, total_keys)
+            is_chunk = True
+            chunk_tag = f"_{start_idx}_{end_idx}"
+            self.restart_file = self.files_to_process.with_name(
+                f"{stem_base}{chunk_tag}_restart.json"
+            )
+            if self.restart and self.restart_file.exists():
+                try:
+                    with open(self.restart_file, "r", encoding="utf-8") as f_rst:
+                        saved_chunk_data = json_load(f_rst)
+                    for k, v in saved_chunk_data.items():
+                        if k in full_data and isinstance(v, dict):
+                            full_data[k].update(v)
+                except Exception as e_rst:
+                    logger.warning(f"Could not read restart file {self.restart_file}: {e_rst}")
+            assigned_keys = all_keys[start_idx : end_idx]
+        else:
+            stem_base = stem_no_restart
+            base_group = stem_base.replace("_prefix", "")
+            is_chunk = False
+            chunk_tag = ""
+            if is_restart_file:
+                self.restart_file = self.files_to_process
+            else:
+                self.restart_file = self.files_to_process.with_name(
+                    f"{stem_base}_restart.json"
+                )
+            if self.restart and not is_restart_file and self.restart_file.exists():
+                try:
+                    with open(self.restart_file, "r", encoding="utf-8") as f_rst:
+                        saved_rst = json_load(f_rst)
+                    for k, v in saved_rst.items():
+                        if k in full_data and isinstance(v, dict):
+                            full_data[k].update(v)
+                except Exception as e_rst:
+                    logger.warning(f"Could not read restart file {self.restart_file}: {e_rst}")
+            assigned_keys = all_keys
+
+        self.is_chunk = is_chunk
+
+        self.group_name = f"{base_group}{chunk_tag}"
         self.output_props_final = self.output_dir / f"props_{self.group_name}.parquet"
+        self.output_xyz_final = self.output_dir / f"structs_{self.group_name}.xyz"
         self.output_props_rank = (
             self.output_dir / f"props_{self.group_name}_{self.rank}.parquet"
         )
@@ -762,19 +837,14 @@ class OmolDataProcessor(S3DataProcessor):
             self.logfile = Path(f"{self.group_name}.log")
         self._setup_logging()
 
-        if self.files_to_process.name.endswith("_restart.json"):
-            self.restart_file = self.files_to_process
-            self.restart = True
-        else:
-            self.restart_file = self.files_to_process.with_name(
-                self.files_to_process.stem + "_restart.json"
-            )
+        self.data = {k: full_data[k] for k in assigned_keys}
 
-        if self.rank == 0:
-            logger.info(f"Initializing dataset from: {self.files_to_process.resolve()}")
-
-        with open(self.files_to_process, "r", encoding="utf-8") as f:
-            self.data = json_load(f)
+        part_pattern = re.compile(
+            rf"^props_{re.escape(self.group_name)}_(\d+)_part_(\d+)\.parquet$"
+        )
+        xyz_pattern = re.compile(
+            rf"^structs_{re.escape(self.group_name)}_(\d+)_part_(\d+)\.xyz$"
+        )
 
         if self.restart:
             if self.rank == 0:
@@ -782,11 +852,12 @@ class OmolDataProcessor(S3DataProcessor):
                     "Scanning output directory to recover already processed files..."
                 )
                 recovered_count = 0
-                parquet_files = [
-                    pf
-                    for pf in self.output_dir.glob(f"props_{self.group_name}*.parquet")
-                    if not pf.name.endswith(".tmp")
-                ]
+                parquet_files = []
+                if self.output_props_final.exists():
+                    parquet_files.append(self.output_props_final)
+                for pf in sorted(self.output_dir.glob(f"props_{self.group_name}_*.parquet")):
+                    if part_pattern.match(pf.name) and not pf.name.endswith(".tmp"):
+                        parquet_files.append(pf)
 
                 all_disk_keys = set()
                 had_repair = False
@@ -926,20 +997,40 @@ class OmolDataProcessor(S3DataProcessor):
             )
             if not self.restart:
                 self.output_props_final.unlink(missing_ok=True)
+                self.output_xyz_final.unlink(missing_ok=True)
+                for pf in self.output_dir.glob(f"props_{self.group_name}_*.parquet"):
+                    if part_pattern.match(pf.name):
+                        pf.unlink(missing_ok=True)
+                for xf in self.output_dir.glob(f"structs_{self.group_name}_*.xyz"):
+                    if xyz_pattern.match(xf.name):
+                        xf.unlink(missing_ok=True)
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        if self.sample_size < 0:
-            self.sample_size = len(self.prefixes)
+        if self.restart and self.output_dir.exists():
+            rank_part_pattern = re.compile(
+                rf"^(?:props|structs)_{re.escape(self.group_name)}_{self.rank}_part_(\d+)\.(?:parquet|xyz)$"
+            )
+            existing_indices = [
+                int(m.group(1))
+                for f in self.output_dir.iterdir()
+                if f.is_file() and (m := rank_part_pattern.match(f.name))
+            ]
+            self.chunk_idx = max(existing_indices) + 1 if existing_indices else 0
+        else:
+            self.chunk_idx = 0
 
-        max_idx = len(self.prefixes)
-        start_idx = self.args.start_index
-        end_idx = min(start_idx + self.sample_size, max_idx)
-
-        self.indices_to_process = list(range(start_idx, end_idx))
+        if getattr(self, "is_chunk", False):
+            self.indices_to_process = list(range(len(self.prefixes)))
+        else:
+            sample_size = getattr(self.args, "sample_size", -1)
+            if sample_size is not None and sample_size > 0:
+                self.indices_to_process = list(range(min(sample_size, len(self.prefixes))))
+            else:
+                self.indices_to_process = list(range(len(self.prefixes)))
         num_tasks = len(self.indices_to_process)
 
         if getattr(self.args, "batch_size", None) is not None:
-            self.batch_size = max(100, self.args.batch_size)
+            self.batch_size = max(1, self.args.batch_size)
         else:
             active_workers = (
                 max(1, self.size - 1) if self.size > 1 else max(1, self.size)
@@ -1247,8 +1338,7 @@ class OmolDataProcessor(S3DataProcessor):
 
         pbar.close()
         # Final restart save
-        with open(self.restart_file, "w") as f:
-            json_dump(self.data, f, indent=4)
+        self._save_restart_file()
 
         elapsed = time.time() - start_time
         logger.info("Manager complete. Merging results...")
@@ -1306,12 +1396,17 @@ class OmolDataProcessor(S3DataProcessor):
             self.comm.send("DONE", dest=0, tag=TAG_DONE)
 
     def _save_restart_file(self) -> None:
-        """Saves current state of self.data to self.restart_file."""
+        """Atomically saves current state of self.data to self.restart_file."""
+        if getattr(self, "rank", 0) != 0:
+            return
+        tmp_file = self.restart_file.with_name(f"{self.restart_file.name}.tmp")
         try:
-            with open(self.restart_file, "w") as f:
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json_dump(self.data, f, indent=4)
+            tmp_file.replace(self.restart_file)
         except Exception as e:
             logger.error(f"Failed to write restart file {self.restart_file}: {e}", exc_info=True)
+            tmp_file.unlink(missing_ok=True)
 
     def _final_merge(self, elapsed_time: float) -> None:
         """Merges per-rank part files into single Parquet and ExtXYZ outputs."""
@@ -1334,10 +1429,19 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.warning(f"Could not read existing Parquet for restart: {e}")
                 had_merge_error = True
 
+        part_pattern = re.compile(
+            rf"^props_{re.escape(self.group_name)}_(\d+)_part_(\d+)\.parquet$"
+        )
+        xyz_pattern = re.compile(
+            rf"^structs_{re.escape(self.group_name)}_(\d+)_part_(\d+)\.xyz$"
+        )
+
         part_files = [
             pf
             for pf in sorted(self.output_dir.glob(f"props_{self.group_name}_*.parquet"))
-            if pf != self.output_props_final and not pf.name.endswith(".tmp")
+            if pf != self.output_props_final
+            and not pf.name.endswith(".tmp")
+            and part_pattern.match(pf.name)
         ]
         successful_pfs = []
         for pf in tqdm(part_files, desc="Merging Parquet parts", disable=len(part_files) == 0):
@@ -1382,10 +1486,17 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.warning(f"Could not read existing XYZ for restart: {e}")
                 had_merge_error = True
 
+        output_xyz_final = getattr(
+            self,
+            "output_xyz_final",
+            self.output_dir / f"structs_{self.group_name}.xyz",
+        )
         xyz_parts = [
             xf
             for xf in sorted(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
-            if xf != output_xyz_final and not xf.name.endswith(".tmp")
+            if xf != output_xyz_final
+            and not xf.name.endswith(".tmp")
+            and xyz_pattern.match(xf.name)
         ]
         successful_xfs = []
         for xf in tqdm(xyz_parts, desc="Merging ExtXYZ parts", disable=len(xyz_parts) == 0):
@@ -1497,6 +1608,10 @@ class OmolDataProcessor(S3DataProcessor):
         else:
             final_saved_keys = existing_pq_keys & existing_xyz_keys
 
+        for k in final_saved_keys:
+            if k in self.data:
+                self.data[k]["processed"] = True
+
         # Identify any key marked processed in self.data that is NOT in the final saved outputs
         for x, item in self.data.items():
             if item.get("processed", False) and x not in final_saved_keys:
@@ -1578,9 +1693,192 @@ class OmolDataProcessor(S3DataProcessor):
 
             if recs:
                 self.flush_recs(recs, all_atoms)
-            with open(self.restart_file, "w") as f:
-                json_dump(self.data, f, indent=4)
+            self._save_restart_file()
             self._final_merge(time.time() - start_time)
         except Exception as e:
             logger.error(f"Error during serial execution: {e}", exc_info=True)
             raise
+
+
+def merge_chunks(
+    data_source: Union[str, Path],
+    output_dir: Union[str, Path],
+    delete_chunks: bool = False,
+) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
+    """
+    Merges all completed chunk files (props_{base}_{start}_{end}.parquet and
+    structs_{base}_{start}_{end}.xyz) in output_dir into unified final outputs
+    (props_{base}.parquet and structs_{base}.xyz).
+    Also consolidates all chunk restart files into {stem}_restart.json.
+
+    Parameters
+    ----------
+    data_source : Union[str, Path]
+        Path to the original prefix JSON file (e.g. omol_prefix.json).
+    output_dir : Union[str, Path]
+        Directory where chunk parquet/xyz files are located.
+    delete_chunks : bool, default False
+        Whether to delete individual chunk files after successful merge.
+
+    Returns
+    -------
+    Tuple[Optional[Path], Optional[Path], Optional[Path]]
+        Paths to (final_parquet, final_xyz, final_restart_json).
+    """
+    data_source = Path(data_source)
+    output_dir = Path(output_dir)
+
+    stem = data_source.stem
+    stem_no_restart = stem[:-8] if stem.endswith("_restart") else stem
+    m_chunk = re.search(r"^(.*?)(?:_(\d+)_(\d+))$", stem_no_restart)
+    stem_base = m_chunk.group(1) if m_chunk else stem_no_restart
+    base_group = stem_base.replace("_prefix", "")
+
+    chunk_pq_pattern = re.compile(
+        rf"^props_{re.escape(base_group)}_(\d+)_(\d+)\.parquet$"
+    )
+    chunk_xyz_pattern = re.compile(
+        rf"^structs_{re.escape(base_group)}_(\d+)_(\d+)\.xyz$"
+    )
+
+    if not output_dir.exists():
+        logger.error(f"Output directory {output_dir} does not exist.")
+        return None, None, None
+
+    pq_files = []
+    for pf in output_dir.iterdir():
+        if pf.is_file() and not pf.name.endswith(".tmp"):
+            m = chunk_pq_pattern.match(pf.name)
+            if m:
+                pq_files.append((int(m.group(1)), int(m.group(2)), pf))
+
+    if not pq_files:
+        logger.warning(
+            f"No chunk Parquet files found in {output_dir} matching props_{base_group}_<start>_<end>.parquet"
+        )
+        return None, None, None
+
+    # Sort chunks in order of starting index
+    pq_files.sort(key=lambda x: (x[0], x[1]))
+
+    # Check for gaps or overlaps
+    for i in range(len(pq_files) - 1):
+        cur_start, cur_end, cur_f = pq_files[i]
+        next_start, next_end, next_f = pq_files[i + 1]
+        if cur_end < next_start:
+            logger.warning(
+                f"Gap detected between chunk [{cur_start}, {cur_end}) and [{next_start}, {next_end}): {next_start - cur_end} entries missing."
+            )
+        elif cur_end > next_start:
+            logger.warning(
+                f"Overlap detected between chunk [{cur_start}, {cur_end}) and [{next_start}, {next_end})."
+            )
+
+    # Check matching ExtXYZ files
+    xyz_files = []
+    for start, end, pf in pq_files:
+        xf = output_dir / f"structs_{base_group}_{start}_{end}.xyz"
+        if not xf.exists():
+            raise FileNotFoundError(
+                f"Missing ExtXYZ partner {xf.name} for chunk Parquet {pf.name}"
+            )
+        xyz_files.append((start, end, xf))
+
+    # --- Merge Parquet files ---
+    all_dfs = []
+    for start, end, pf in tqdm(pq_files, desc="Merging Parquet chunks"):
+        try:
+            df = pd.read_parquet(pf)
+            all_dfs.append(df)
+        except Exception as e:
+            logger.error(f"Failed to read Parquet chunk {pf}: {e}", exc_info=True)
+            raise
+
+    final_df = pd.concat(all_dfs, ignore_index=True)
+    if "argonne_rel" in final_df.columns:
+        final_df = final_df.drop_duplicates(subset=["argonne_rel"], keep="last")
+
+    final_pq = output_dir / f"props_{base_group}.parquet"
+    tmp_pq = output_dir / f"props_{base_group}.parquet.tmp"
+    final_df.to_parquet(tmp_pq, index=False)
+    tmp_pq.replace(final_pq)
+    logger.info(
+        f"Successfully merged {len(pq_files)} Parquet chunks into {final_pq} ({len(final_df)} records)."
+    )
+
+    # --- Merge ExtXYZ files ---
+    final_xyz = output_dir / f"structs_{base_group}.xyz"
+    tmp_xyz = output_dir / f"structs_{base_group}.xyz.tmp"
+    with open(tmp_xyz, "w+b") as f_out:
+        for start, end, xf in tqdm(xyz_files, desc="Streaming ExtXYZ chunks"):
+            with open(xf, "rb") as f_in:
+                shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
+            # Ensure newline between files
+            if f_out.tell() > 0:
+                f_out.seek(f_out.tell() - 1)
+                last_byte = f_out.read(1)
+                f_out.seek(0, os.SEEK_END)
+                if last_byte != b"\n":
+                    f_out.write(b"\n")
+    tmp_xyz.replace(final_xyz)
+    logger.info(
+        f"Successfully merged {len(xyz_files)} ExtXYZ chunks into {final_xyz}."
+    )
+
+    # --- Consolidate Restart Files ---
+    chunk_rst_pattern = re.compile(
+        rf"^{re.escape(stem_base)}_(\d+)_(\d+)_restart\.json$"
+    )
+    candidate_dirs = {data_source.parent, output_dir}
+    found_rsts = []
+    for c_dir in candidate_dirs:
+        if c_dir.exists():
+            for rf in c_dir.iterdir():
+                if rf.is_file() and chunk_rst_pattern.match(rf.name):
+                    found_rsts.append(rf)
+
+    final_rst: Optional[Path] = None
+    if found_rsts or (data_source.exists() and data_source.is_file()):
+        base_data = {}
+        if data_source.exists() and data_source.is_file():
+            try:
+                with open(data_source, "r", encoding="utf-8") as f:
+                    base_data = json_load(f)
+            except Exception as e:
+                logger.warning(f"Could not load base data source {data_source}: {e}")
+
+        for rf in sorted(found_rsts):
+            try:
+                with open(rf, "r", encoding="utf-8") as f:
+                    c_data = json_load(f)
+                for k, v in c_data.items():
+                    if k in base_data and isinstance(v, dict):
+                        base_data[k].update(v)
+                    else:
+                        base_data[k] = v
+            except Exception as e:
+                logger.warning(f"Could not read chunk restart file {rf}: {e}")
+
+        final_rst = data_source.parent / f"{stem_base}_restart.json"
+        tmp_rst = data_source.parent / f"{stem_base}_restart.json.tmp"
+        try:
+            with open(tmp_rst, "w", encoding="utf-8") as f:
+                json_dump(base_data, f, indent=4)
+            tmp_rst.replace(final_rst)
+            logger.info(f"Consolidated restart file saved to {final_rst}")
+        except Exception as e:
+            logger.error(f"Failed to write consolidated restart file: {e}", exc_info=True)
+            tmp_rst.unlink(missing_ok=True)
+
+    # --- Cleanup if requested ---
+    if delete_chunks:
+        logger.info("Deleting intermediate chunk files...")
+        for _, _, pf in pq_files:
+            pf.unlink(missing_ok=True)
+        for _, _, xf in xyz_files:
+            xf.unlink(missing_ok=True)
+        for rf in found_rsts:
+            rf.unlink(missing_ok=True)
+
+    return final_pq, final_xyz, final_rst
+
