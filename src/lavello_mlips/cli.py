@@ -1,12 +1,13 @@
 import argparse
 import logging
 import os
+import tempfile
 
 os.environ["ASE_MPI"] = "0"
 from pathlib import Path
 
 from .process_omol25 import OmolDataProcessor
-from .utils import setup_logging
+from .utils import setup_logging, get_shm_temp_dir
 from mpi4py import MPI as mpi
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete chunk files after successful merge when --merge-chunks is used.",
     )
+    parser.add_argument(
+        "--tmp-dir",
+        "--temp-dir",
+        dest="tmp_dir",
+        type=Path,
+        default=Path(os.environ.get("LAVELLO_TMPDIR", ".")),
+        help="Optional custom scratch/temporary directory for temporary files (defaults to current directory or LAVELLO_TMPDIR).",
+    )
     return parser.parse_args()
 
 
@@ -119,6 +128,11 @@ def main() -> None:
     data processing across available workers.
     """
     args = parse_args()
+
+    if getattr(args, "tmp_dir", None):
+        custom_tmp = get_shm_temp_dir(args.tmp_dir)
+        if custom_tmp:
+            tempfile.tempdir = custom_tmp
 
     log_level_map = {
         "DEBUG": logging.DEBUG,

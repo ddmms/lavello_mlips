@@ -146,3 +146,62 @@ def test_warnings_captured_in_logger():
     assert "py.warnings - WARNING - " in res.stdout
     assert "Test warning in logger!" in res.stdout
 
+
+def test_cli_tmp_dir_argument(tmp_path):
+    """Test --tmp-dir and --temp-dir flags."""
+    import tempfile
+    from lavello_mlips.cli import main as cli_main
+
+    custom_tmp = tmp_path / "custom_scratch"
+    data_source = tmp_path / "train.json"
+    data_source.write_text("{}")
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+
+    # Test --tmp-dir
+    test_args = [
+        "lavello-mlips",
+        "--data-source", str(data_source),
+        "--local-dir", str(local_dir),
+        "--tmp-dir", str(custom_tmp),
+    ]
+    with patch.object(sys, "argv", test_args), \
+         patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor, \
+         patch("lavello_mlips.cli.setup_logging"):
+        cli_main()
+        args, rank, size, comm = MockProcessor.call_args[0]
+        assert args.tmp_dir == custom_tmp
+        assert tempfile.tempdir == str(custom_tmp.resolve())
+        assert custom_tmp.exists()
+
+    # Test alias --temp-dir
+    custom_tmp2 = tmp_path / "custom_scratch2"
+    test_args2 = [
+        "lavello-mlips",
+        "--data-source", str(data_source),
+        "--local-dir", str(local_dir),
+        "--temp-dir", str(custom_tmp2),
+    ]
+    with patch.object(sys, "argv", test_args2), \
+         patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor, \
+         patch("lavello_mlips.cli.setup_logging"):
+        cli_main()
+        args, rank, size, comm = MockProcessor.call_args[0]
+        assert args.tmp_dir == custom_tmp2
+        assert tempfile.tempdir == str(custom_tmp2.resolve())
+        assert custom_tmp2.exists()
+
+    # Test default when flag is omitted (defaults to current folder)
+    test_args_default = [
+        "lavello-mlips",
+        "--data-source", str(data_source),
+        "--local-dir", str(local_dir),
+    ]
+    with patch.object(sys, "argv", test_args_default), \
+         patch("lavello_mlips.cli.OmolDataProcessor") as MockProcessor, \
+         patch("lavello_mlips.cli.setup_logging"):
+        cli_main()
+        args, rank, size, comm = MockProcessor.call_args[0]
+        assert args.tmp_dir == Path(".")
+        assert tempfile.tempdir == str(Path(".").resolve())
+

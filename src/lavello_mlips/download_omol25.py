@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import re
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
@@ -68,6 +69,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional path to a file where logs will also be written.",
+    )
+    parser.add_argument(
+        "--tmp-dir",
+        "--temp-dir",
+        dest="tmp_dir",
+        type=Path,
+        default=Path(os.environ.get("LAVELLO_TMPDIR", ".")),
+        help="Optional custom scratch/temporary directory for temporary files (defaults to current directory or LAVELLO_TMPDIR).",
     )
     return parser.parse_args()
 
@@ -291,6 +300,11 @@ def download_serial(keys: List[str], data: Dict[str, Any], args: argparse.Namesp
 
 def main() -> None:
     args = parse_args()
+
+    if getattr(args, "tmp_dir", None):
+        custom_tmp = get_shm_temp_dir(args.tmp_dir)
+        if custom_tmp:
+            tempfile.tempdir = custom_tmp
 
     if args.mpi:
         comm = MPI.COMM_WORLD

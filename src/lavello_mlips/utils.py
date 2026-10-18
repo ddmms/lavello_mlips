@@ -133,8 +133,32 @@ def extract_gbw_from_path(gbw_path: Path) -> Optional[bytes]:
     return None
 
 
-def get_shm_temp_dir() -> Optional[str]:
-    """Return '/dev/shm' if it exists and is writable, otherwise None."""
+def get_shm_temp_dir(override: Optional[Union[str, Path]] = None) -> Optional[str]:
+    """Return temporary directory path.
+
+    Checks in order:
+    1. override parameter (creates directory if it does not exist)
+    2. LAVELLO_TMPDIR environment variable (creates directory if it does not exist)
+    3. /dev/shm (if it exists and is writable)
+    Otherwise returns None (falling back to system default tempdir).
+    """
+    if override is not None:
+        p = Path(override).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        if p.is_dir() and os.access(p, os.W_OK):
+            return str(p.resolve())
+        raise PermissionError(f"Specified tmp directory '{override}' is not writable.")
+
+    env_tmp = os.environ.get("LAVELLO_TMPDIR")
+    if env_tmp:
+        p = Path(env_tmp).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        if p.is_dir() and os.access(p, os.W_OK):
+            return str(p.resolve())
+        logging.getLogger(__name__).warning(
+            f"LAVELLO_TMPDIR '{env_tmp}' is not writable, falling back."
+        )
+
     shm = Path("/dev/shm")
     if shm.is_dir() and os.access(shm, os.W_OK):
         return "/dev/shm"

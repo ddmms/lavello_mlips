@@ -1220,6 +1220,111 @@ def test_unique_temp_prefix_mpi(tmp_path, monkeypatch):
     assert created_dir_name[0].startswith(f"orca2json_rank3_pid{pid}_")
 
 
+def test_get_shm_temp_dir_override_and_env(tmp_path, monkeypatch):
+    """Test get_shm_temp_dir with override path and LAVELLO_TMPDIR env var."""
+    from lavello_mlips.utils import get_shm_temp_dir
+
+    custom_dir = tmp_path / "custom_temp"
+    assert not custom_dir.exists()
+
+    # Override should auto-create directory and return resolved path
+    res = get_shm_temp_dir(custom_dir)
+    assert custom_dir.is_dir()
+    assert res == str(custom_dir.resolve())
+
+    # LAVELLO_TMPDIR env var
+    env_dir = tmp_path / "env_temp"
+    assert not env_dir.exists()
+    monkeypatch.setenv("LAVELLO_TMPDIR", str(env_dir))
+    res_env = get_shm_temp_dir()
+    assert env_dir.is_dir()
+    assert res_env == str(env_dir.resolve())
+
+    # When override is given, it takes precedence over LAVELLO_TMPDIR
+    res_override = get_shm_temp_dir(custom_dir)
+    assert res_override == str(custom_dir.resolve())
+
+
+def test_integrals_from_orca_2json_custom_tmp_dir(tmp_path):
+    """Test that _integrals_from_orca_2json uses custom temp_dir and cleans up."""
+    from lavello_mlips.process_omol25 import _integrals_from_orca_2json
+    import struct
+
+    custom_tmp = tmp_path / "my_nvme_scratch"
+    created_dirs = []
+
+    def mock_subprocess_run(cmd, cwd, capture_output, text):
+        created_dirs.append(Path(cwd))
+        assert str(custom_tmp.resolve()) in str(Path(cwd).resolve())
+        payload = {
+            "Molecule": {
+                "S-Matrix": [[1.0]],
+                "dipole": [[[0.0]], [[0.0]], [[0.0]]],
+                "quadrupole": [[[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]], [[0.0]]],
+            }
+        }
+        (Path(cwd) / "orca.json").write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    dummy_gbw = bytearray(b"\x00" * 2048)
+    struct.pack_into("<q", dummy_gbw, 0, 16)
+    atoms = [(1, np.array([0.0, 0.0, 0.0]))]
+    shells = [(0, 0, 0, np.array([1.0]), np.array([1.0]))]
+
+    with patch("lavello_mlips.process_omol25._orca_2json_executable", return_value="orca_2json"), \
+         patch("subprocess.run", side_effect=mock_subprocess_run):
+        overlap, dipole, quadrupole = _integrals_from_orca_2json(
+            bytes(dummy_gbw), atoms, shells, temp_dir=custom_tmp
+        )
+
+    assert len(created_dirs) == 1
+    # Verify created inside custom_tmp and deleted on cleanup
+    assert str(custom_tmp.resolve()) in str(created_dirs[0].resolve())
+    assert not created_dirs[0].exists()
+
+
+def test_omol_data_processor_custom_tmp_dir(tmp_path):
+    """Test that OmolDataProcessor honors args.tmp_dir."""
+    from lavello_mlips.process_omol25 import OmolDataProcessor
+    import tempfile
+
+    custom_tmp = tmp_path / "processor_scratch"
+    data_source = tmp_path / "omol.json"
+    data_source.write_text(json.dumps({"mol/": {"key": "mol.tar.zst"}}))
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+
+    class Args:
+        def __init__(self):
+            self.data_source = data_source
+            self.output_dir = output_dir
+            self.local_dir = None
+            self.login_file = tmp_path / "login.json"
+            self.bucket = "mock-bucket"
+            self.sample_size = -1
+            self.start_index = None
+            self.restart = False
+            self.memory_threshold_gb = 2.0
+            self.batch_size = 10
+            self.log_level = "INFO"
+            self.log_file = None
+            self.tmp_dir = custom_tmp
+
+    (tmp_path / "login.json").write_text('{"access_key": "a", "secret_key": "b"}')
+    args = Args()
+    processor = OmolDataProcessor(args, rank=0, size=1, comm=None)
+
+    assert processor.tmp_dir == str(custom_tmp.resolve())
+    assert tempfile.tempdir == str(custom_tmp.resolve())
+    assert custom_tmp.is_dir()
+
+    # Also test default fallback to current directory when tmp_dir is None
+    args.tmp_dir = None
+    processor_default = OmolDataProcessor(args, rank=0, size=1, comm=None)
+    assert processor_default.tmp_dir == str(Path(".").resolve())
+    assert tempfile.tempdir == str(Path(".").resolve())
+
+
 def test_chunked_runs_no_file_collision_and_restart(tmp_path):
     """
     Verify that two concurrent/sequential chunked jobs with disjoint ranges
