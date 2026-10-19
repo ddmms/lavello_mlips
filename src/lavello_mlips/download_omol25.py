@@ -42,7 +42,12 @@ def parse_args() -> argparse.Namespace:
         "--data-source", type=Path, required=True, help="JSON file with keys."
     )
     parser.add_argument(
-        "--sample-size", type=int, default=-1, help="Number of samples to run."
+        "--sample-size",
+        "--sample",
+        dest="sample_size",
+        type=int,
+        default=-1,
+        help="Number of samples to run.",
     )
     parser.add_argument("--start-index", type=int, default=None, help="Start index.")
     parser.add_argument(

@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sample-size",
+        "--sample",
+        dest="sample_size",
         type=int,
         default=-1,
         help="Default number of samples to process if --end-index is not specified.",
