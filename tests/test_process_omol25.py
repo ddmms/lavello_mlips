@@ -1920,6 +1920,128 @@ def test_merge_chunks_drops_bad_frame_from_extxyz_and_parquet(tmp_path):
     assert rst_data["mol_bad/"]["processed"] is False
 
 
+def test_merge_chunks_without_parquet_adds_prefix_and_warns(tmp_path, caplog):
+    """
+    Test that when only ExtXYZ chunk files exist (no Parquet files),
+    merge_chunks does not abort, prints a warning, and prefixes the merged output with stage1
+    (e.g. stage1_structs_rna.xyz).
+    """
+    from lavello_mlips.process_omol25 import merge_chunks
+    import logging
+
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "rna_prefix.json"
+
+    data = {
+        "rna_0/": {"key": "d0.tar.zst", "processed": False},
+        "rna_1/": {"key": "d1.tar.zst", "processed": False},
+    }
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Only create ExtXYZ parts, NO Parquet parts
+    at0 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at0.info = {"argonne_rel": "rna_0/", "data_id": 0}
+    ase.io.write(str(output_dir / "structs_rna_0_part_0.xyz"), [at0], format="extxyz")
+
+    at1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.75]])
+    at1.info = {"argonne_rel": "rna_1/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_rna_1_part_0.xyz"), [at1], format="extxyz")
+
+    with caplog.at_level(logging.WARNING):
+        final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    # Verify return values
+    assert final_pq is None
+    assert final_xyz == output_dir / "stage1_structs_rna.xyz"
+    assert final_rst == tmp_path / "rna_prefix_restart.json"
+
+    # Verify warning in logs
+    assert any("Merging without Parquet files" in rec.message for rec in caplog.records)
+    assert any("stage1" in rec.message for rec in caplog.records)
+
+    # Verify merged file content
+    assert final_xyz.exists()
+    assert not (output_dir / "props_rna.parquet").exists()
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+    assert len(atoms_merged) == 2
+    assert {at.info["argonne_rel"] for at in atoms_merged} == {"rna_0/", "rna_1/"}
+
+    # Verify chunks deleted
+    assert not (output_dir / "structs_rna_0_part_0.xyz").exists()
+    assert not (output_dir / "structs_rna_1_part_0.xyz").exists()
+
+    # Verify restart file updated
+    with open(final_rst) as f:
+        rst_data = json.load(f)
+    assert rst_data["rna_0/"]["processed"] is True
+    assert rst_data["rna_1/"]["processed"] is True
+
+
+def test_merge_chunks_without_parquet_custom_prefix(tmp_path):
+    """Test merge_chunks with custom prefix when merging without parquet files."""
+    from lavello_mlips.process_omol25 import merge_chunks
+
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "custom_prefix.json"
+
+    data = {"c0/": {"key": "c0.tar.zst", "processed": False}}
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    at = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at.info = {"argonne_rel": "c0/", "data_id": 0}
+    ase.io.write(str(output_dir / "structs_custom_0_part_0.xyz"), [at], format="extxyz")
+
+    final_pq, final_xyz, final_rst = merge_chunks(
+        data_source, output_dir, delete_chunks=False, prefix="stage2"
+    )
+
+    assert final_pq is None
+    assert final_xyz == output_dir / "stage2_structs_custom.xyz"
+    assert final_xyz.exists()
+    atoms_merged = ase.io.read(str(final_xyz), index=":")
+    assert len(atoms_merged) == 1
+    assert atoms_merged[0].info["argonne_rel"] == "c0/"
+
+
+def test_cli_merge_chunks_without_parquet(tmp_path):
+    """Test invoking lavello_mlips CLI with --merge-chunks and --merge-prefix when no parquet files exist."""
+    from lavello_mlips.cli import main as cli_main
+    from unittest.mock import patch
+
+    output_dir = tmp_path / "cli_outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "mydata_prefix.json"
+
+    data = {"m1/": {"key": "k1", "processed": False}}
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    at = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]])
+    at.info = {"argonne_rel": "m1/", "data_id": 1}
+    ase.io.write(str(output_dir / "structs_mydata_0_1.xyz"), [at], format="extxyz")
+
+    test_argv = [
+        "lavello_mlips",
+        "--data-source", str(data_source),
+        "--output-dir", str(output_dir),
+        "--merge-chunks",
+        "--merge-prefix", "stage1",
+    ]
+    with patch.object(sys, "argv", test_argv):
+        cli_main()
+
+    assert (output_dir / "stage1_structs_mydata.xyz").exists()
+    assert not (output_dir / "props_mydata.parquet").exists()
+    atoms_res = ase.io.read(str(output_dir / "stage1_structs_mydata.xyz"), index=":")
+    assert len(atoms_res) == 1
+    assert atoms_res[0].info["argonne_rel"] == "m1/"
+
+
+
 
 
 

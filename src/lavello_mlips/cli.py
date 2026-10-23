@@ -112,6 +112,14 @@ def parse_args() -> argparse.Namespace:
         help="Delete chunk files after successful merge when --merge-chunks is used.",
     )
     parser.add_argument(
+        "--merge-prefix",
+        "--prefix",
+        dest="merge_prefix",
+        type=str,
+        default="stage1",
+        help="Prefix to add to merged file when merging without parquet files (default: stage1).",
+    )
+    parser.add_argument(
         "--tmp-dir",
         "--temp-dir",
         dest="tmp_dir",
@@ -154,6 +162,7 @@ def main() -> None:
             args.data_source,
             args.output_dir,
             delete_chunks=getattr(args, "delete_chunks", False),
+            prefix=getattr(args, "merge_prefix", "stage1"),
         )
         return
 

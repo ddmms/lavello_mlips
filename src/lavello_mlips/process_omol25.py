@@ -967,6 +967,7 @@ class OmolDataProcessor(S3DataProcessor):
         self.is_chunk = is_chunk
 
         self.group_name = f"{base_group}{chunk_tag}"
+        self.merge_prefix = getattr(args, "merge_prefix", "stage1") or "stage1"
         self.output_props_final = self.output_dir / f"props_{self.group_name}.parquet"
         self.output_xyz_final = self.output_dir / f"structs_{self.group_name}.xyz"
         self.output_props_rank = (
@@ -1688,7 +1689,29 @@ class OmolDataProcessor(S3DataProcessor):
             logger.warning(
                 f"{len(mismatched_keys)} structures mismatched between Parquet and ExtXYZ during merge."
             )
-        if "argonne_rel" in final_df.columns:
+        is_xyz_only = (not all_dfs) and bool(all_atoms)
+        if is_xyz_only:
+            prefix = getattr(self, "merge_prefix", "stage1") or "stage1"
+            prefix_clean = prefix.strip().rstrip("_")
+            output_xyz_final = self.output_dir / f"{prefix_clean}_structs_{self.group_name}.xyz"
+            logger.warning(
+                f"No Parquet part files found for {self.group_name}. "
+                f"Merging ExtXYZ parts without Parquet files, adding prefix '{prefix_clean}' to merged file: {output_xyz_final.name}"
+            )
+            seen_keys = set()
+            dedup_atoms = []
+            for at in reversed(all_atoms):
+                rel = at.info.get("argonne_rel")
+                if rel is not None:
+                    if rel not in seen_keys:
+                        seen_keys.add(rel)
+                        dedup_atoms.append(at)
+                else:
+                    dedup_atoms.append(at)
+            dedup_atoms.reverse()
+            all_atoms = dedup_atoms
+            valid_keys = xyz_keys
+        elif "argonne_rel" in final_df.columns:
             if len(pq_keys) != len(valid_keys) or len(final_df) != len(valid_keys):
                 final_df = final_df[final_df["argonne_rel"].isin(valid_keys)].drop_duplicates(
                     subset=["argonne_rel"], keep="last"
@@ -1718,7 +1741,7 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.error(f"Failed to write final Parquet {self.output_props_final}: {e}", exc_info=True)
                 failed_keys.update(valid_keys - existing_pq_keys)
         else:
-            if not self.restart or not self.output_props_final.exists():
+            if not is_xyz_only and (not self.restart or not self.output_props_final.exists()):
                 logger.warning("No data processed.")
 
         xyz_write_success = False
@@ -1738,8 +1761,12 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.error(f"Failed to write final ExtXYZ {output_xyz_final}: {e}", exc_info=True)
                 failed_keys.update(valid_keys - existing_xyz_keys)
 
-        # Unlink successfully merged part files only if both writes succeeded
-        if pq_write_success and xyz_write_success:
+        # Unlink successfully merged part files only if writes succeeded
+        if is_xyz_only and xyz_write_success:
+            for xf in successful_xfs:
+                xf.unlink(missing_ok=True)
+            final_saved_keys = xyz_keys
+        elif pq_write_success and xyz_write_success:
             for pf in successful_pfs:
                 pf.unlink(missing_ok=True)
             for xf in successful_xfs:
@@ -1844,6 +1871,7 @@ def merge_chunks(
     data_source: Union[str, Path],
     output_dir: Union[str, Path],
     delete_chunks: bool = False,
+    prefix: str = "stage1",
 ) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
     """
     Merges all completed chunk and part files in output_dir into unified final outputs
@@ -1852,6 +1880,8 @@ def merge_chunks(
       - Range chunk files: props_{base}_{start}_{end}.parquet
       - Range part files: props_{base}_{start}_{end}_{rank}_part_{part}.parquet
       - Rank part files (from runs without start-index): props_{base}_{rank}_part_{part}.parquet
+      - ExtXYZ-only merges (when no Parquet files exist): prints a warning and adds
+        a prefix (e.g. stage1_structs_{base}.xyz) to the merged output.
     Also consolidates all chunk restart files into {stem}_restart.json and marks merged
     records as processed=True.
 
@@ -1863,11 +1893,14 @@ def merge_chunks(
         Directory where chunk/part parquet and xyz files are located.
     delete_chunks : bool, default False
         Whether to delete individual intermediate chunk/part files after successful merge.
+    prefix : str, default "stage1"
+        Prefix to add to merged ExtXYZ file when merging without Parquet files.
 
     Returns
     -------
     Tuple[Optional[Path], Optional[Path], Optional[Path]]
         Paths to (final_parquet, final_xyz, final_restart_json).
+        If merging without Parquet files, final_parquet will be None.
     """
     data_source = Path(data_source)
     output_dir = Path(output_dir)
@@ -1955,15 +1988,181 @@ def merge_chunks(
         })
 
     if not items:
-        other_props = [
-            f.name for f in output_dir.glob("props_*.parquet")
-            if f.is_file() and not f.name.endswith(".tmp") and f != final_pq
-        ]
-        msg = f"No chunk or part Parquet files found in {output_dir} matching props_{base_group}_*.parquet"
-        if other_props:
-            msg += f" (found other Parquet files: {other_props[:5]}...; check if --data-source matches the expected group '{base_group}')."
-        logger.warning(msg)
-        return None, None, None
+        # Check if ExtXYZ chunk/part files exist to allow merging without Parquet files
+        re_xyz_range_chunk = re.compile(
+            rf"^structs_{re.escape(base_group)}_(\d+)_(\d+)\.xyz$"
+        )
+        re_xyz_range_part = re.compile(
+            rf"^structs_{re.escape(base_group)}_(\d+)_(\d+)_(\d+)_part_(\d+)\.xyz$"
+        )
+        re_xyz_rank_part = re.compile(
+            rf"^structs_{re.escape(base_group)}_(\d+)_part_(\d+)\.xyz$"
+        )
+        re_xyz_any = re.compile(
+            rf"^structs_{re.escape(base_group)}_.*\.xyz$"
+        )
+
+        prefix_clean = prefix.strip().rstrip("_") if prefix else "stage1"
+        target_xyz_name = f"{prefix_clean}_structs_{base_group}.xyz"
+        final_xyz = output_dir / target_xyz_name
+
+        xyz_items = []
+        for xf in output_dir.iterdir():
+            if (
+                not xf.is_file()
+                or xf.name.endswith(".tmp")
+                or xf == final_xyz
+                or xf.name == f"structs_{base_group}.xyz"
+            ):
+                continue
+
+            m1 = re_xyz_range_chunk.match(xf.name)
+            if m1:
+                start, end = int(m1.group(1)), int(m1.group(2))
+                sort_key = (0, start, end, 0, 0, xf.name)
+            else:
+                m2 = re_xyz_range_part.match(xf.name)
+                if m2:
+                    start, end, rank, part = int(m2.group(1)), int(m2.group(2)), int(m2.group(3)), int(m2.group(4))
+                    sort_key = (1, start, end, rank, part, xf.name)
+                else:
+                    m3 = re_xyz_rank_part.match(xf.name)
+                    if m3:
+                        rank, part = int(m3.group(1)), int(m3.group(2))
+                        sort_key = (2, 0, 0, rank, part, xf.name)
+                    else:
+                        if re_xyz_any.match(xf.name):
+                            sort_key = (3, 0, 0, 0, 0, xf.name)
+                        else:
+                            continue
+            xyz_items.append({
+                "xf": xf,
+                "sort_key": sort_key,
+            })
+
+        if not xyz_items:
+            other_props = [
+                f.name for f in output_dir.glob("props_*.parquet")
+                if f.is_file() and not f.name.endswith(".tmp") and f != final_pq
+            ]
+            msg = f"No chunk or part Parquet or ExtXYZ files found in {output_dir} matching props_{base_group}_*.parquet or structs_{base_group}_*.xyz"
+            if other_props:
+                msg += f" (found other Parquet files: {other_props[:5]}...; check if --data-source matches the expected group '{base_group}')."
+            logger.warning(msg)
+            return None, None, None
+
+        logger.warning(
+            f"No Parquet chunk files found matching props_{base_group}_*.parquet in {output_dir}. "
+            f"Merging without Parquet files (ExtXYZ only). "
+            f"Adding prefix '{prefix_clean}' to merged file: {final_xyz.name}"
+        )
+
+        xyz_items.sort(key=lambda x: x["sort_key"])
+
+        all_atoms = []
+        if final_xyz.exists():
+            try:
+                prev_atoms = safe_read_extxyz(final_xyz)
+                all_atoms.extend(prev_atoms)
+            except Exception as e:
+                logger.warning(f"Could not read existing final ExtXYZ {final_xyz}: {e}")
+
+        for it in tqdm(xyz_items, desc=f"Merging ExtXYZ ({prefix_clean})", disable=len(xyz_items) == 0):
+            try:
+                atoms_part = safe_read_extxyz(it["xf"])
+                all_atoms.extend(atoms_part)
+            except Exception as e:
+                logger.warning(f"Failed to read ExtXYZ file {it['xf']}: {e}. Skipping unreadable frames.")
+
+        seen_keys = set()
+        final_atoms = []
+        for at in reversed(all_atoms):
+            rel = at.info.get("argonne_rel")
+            if rel is not None:
+                if rel not in seen_keys:
+                    seen_keys.add(rel)
+                    final_atoms.append(at)
+            else:
+                final_atoms.append(at)
+        final_atoms.reverse()
+
+        tmp_xyz = output_dir / f"{final_xyz.name}.tmp"
+        write(str(tmp_xyz), final_atoms, format="extxyz")
+        tmp_xyz.replace(final_xyz)
+        logger.info(
+            f"Successfully merged {len(xyz_items)} ExtXYZ chunks/parts into {final_xyz} "
+            f"({len(final_atoms)} structures)."
+        )
+
+        # Consolidate restart files
+        chunk_rst_pattern = re.compile(
+            rf"^{re.escape(stem_base)}_(\d+)_(\d+)_restart\.json$"
+        )
+        candidate_dirs = {data_source.parent, output_dir, Path(".")}
+        found_rsts = []
+        for c_dir in candidate_dirs:
+            if c_dir.exists():
+                for rf in c_dir.iterdir():
+                    if rf.is_file() and chunk_rst_pattern.match(rf.name):
+                        found_rsts.append(rf)
+
+        final_rst = data_source.parent / f"{stem_base}_restart.json"
+        base_data = {}
+        if final_rst.exists():
+            try:
+                with open(final_rst, "r", encoding="utf-8") as f:
+                    base_data = json_load(f)
+            except Exception as e:
+                logger.warning(f"Could not read existing restart file {final_rst}: {e}")
+        elif data_source.exists() and data_source.is_file():
+            try:
+                with open(data_source, "r", encoding="utf-8") as f:
+                    base_data = json_load(f)
+            except Exception as e:
+                logger.warning(f"Could not load base data source {data_source}: {e}")
+
+        for rf in sorted(found_rsts):
+            try:
+                with open(rf, "r", encoding="utf-8") as f:
+                    c_data = json_load(f)
+                for k, v in c_data.items():
+                    if k in base_data and isinstance(v, dict):
+                        base_data[k].update(v)
+                    else:
+                        base_data[k] = v
+            except Exception as e:
+                logger.warning(f"Could not read chunk restart file {rf}: {e}")
+
+        saved_keys = {
+            at.info.get("argonne_rel")
+            for at in final_atoms
+            if at.info.get("argonne_rel") is not None
+        }
+        for k in saved_keys:
+            if k in base_data and isinstance(base_data[k], dict):
+                base_data[k]["processed"] = True
+
+        if base_data:
+            tmp_rst = data_source.parent / f"{stem_base}_restart.json.tmp"
+            try:
+                with open(tmp_rst, "w", encoding="utf-8") as f:
+                    json_dump(base_data, f, indent=4)
+                tmp_rst.replace(final_rst)
+                logger.info(f"Consolidated restart file saved to {final_rst}")
+            except Exception as e:
+                logger.error(f"Failed to write consolidated restart file: {e}", exc_info=True)
+                tmp_rst.unlink(missing_ok=True)
+        else:
+            final_rst = None
+
+        if delete_chunks:
+            logger.info("Deleting intermediate ExtXYZ chunk and part files...")
+            for it in xyz_items:
+                it["xf"].unlink(missing_ok=True)
+            for rf in found_rsts:
+                rf.unlink(missing_ok=True)
+
+        return None, final_xyz, final_rst
 
     # Sort items in logical processing order
     items.sort(key=lambda x: x["sort_key"])
