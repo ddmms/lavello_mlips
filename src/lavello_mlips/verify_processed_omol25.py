@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         "--parquet",
         type=Path,
         default=None,
-        help="Path to the .parquet file to check.",
+        help="Optional path to the .parquet file to check. If omitted, verification is performed using JSON and ExtXYZ.",
     )
     parser.add_argument(
         "--extxyz",
@@ -229,6 +229,26 @@ def main() -> None:
                     chunk_tag = f"_{s_i}_{e_i}"
                 else:
                     chunk_tag = f"_{s_i}"
+    elif args.parquet is not None:
+        stem = args.parquet.stem
+        raw = stem[6:] if stem.startswith("props_") else stem
+        m_chunk = re.match(r"^(.*?)(?:_(\d+)_(\d+))$", raw)
+        if m_chunk:
+            base_group = m_chunk.group(1)
+            chunk_tag = f"_{m_chunk.group(2)}_{m_chunk.group(3)}"
+        else:
+            base_group = raw
+    elif args.extxyz is not None:
+        stem = args.extxyz.stem
+        raw = re.sub(r"^(?:.*?_)?structs_", "", stem)
+        if raw == stem and stem.startswith("stage"):
+            raw = re.sub(r"^stage\d+_", "", stem)
+        m_chunk = re.match(r"^(.*?)(?:_(\d+)_(\d+))$", raw)
+        if m_chunk:
+            base_group = m_chunk.group(1)
+            chunk_tag = f"_{m_chunk.group(2)}_{m_chunk.group(3)}"
+        else:
+            base_group = raw
 
     search_dirs = []
     if args.output_dir is not None:
@@ -264,19 +284,21 @@ def main() -> None:
     if args.extxyz is None:
         cand_extxyz = []
         if base_group:
-            if chunk_tag:
+            prefixes = ["", "stage1_", "stage2_"]
+            for pref in prefixes:
+                if chunk_tag:
+                    cand_extxyz.extend([
+                        f"{pref}structs_{base_group}{chunk_tag}.xyz",
+                        f"{pref}structs_{base_group}{chunk_tag}.extxyz",
+                        f"{pref}{base_group}{chunk_tag}.xyz",
+                        f"{pref}{base_group}{chunk_tag}.extxyz",
+                    ])
                 cand_extxyz.extend([
-                    f"structs_{base_group}{chunk_tag}.xyz",
-                    f"structs_{base_group}{chunk_tag}.extxyz",
-                    f"{base_group}{chunk_tag}.xyz",
-                    f"{base_group}{chunk_tag}.extxyz",
+                    f"{pref}structs_{base_group}.xyz",
+                    f"{pref}structs_{base_group}.extxyz",
+                    f"{pref}{base_group}.xyz",
+                    f"{pref}{base_group}.extxyz",
                 ])
-            cand_extxyz.extend([
-                f"structs_{base_group}.xyz",
-                f"structs_{base_group}.extxyz",
-                f"{base_group}.xyz",
-                f"{base_group}.extxyz",
-            ])
         if args.parquet is not None:
             p_stem = args.parquet.stem
             cand_extxyz.extend([
@@ -295,62 +317,97 @@ def main() -> None:
             if args.extxyz is not None:
                 break
 
-    if args.json_file is None and args.parquet is not None:
-        stem = args.parquet.stem
-        raw_prefix = stem[6:] if stem.startswith("props_") else stem
-        candidate_names = []
-        m_chunk = re.match(r"^(.*?)_(\d+)_(\d+)$", raw_prefix)
-        if m_chunk:
-            base_part = m_chunk.group(1)
-            c_start = m_chunk.group(2)
-            c_end = m_chunk.group(3)
-            candidate_names.extend([
-                f"{base_part}_prefix_{c_start}_{c_end}_restart.json",
-                f"{base_part}_{c_start}_{c_end}_restart.json",
-                f"{base_part}_prefix.json",
-                f"{base_part}.json",
-            ])
-        elif start_idx is not None and sample_sz is not None and sample_sz > 0:
-            c_start = start_idx
-            c_end = start_idx + sample_sz
-            candidate_names.extend([
-                f"{raw_prefix}_prefix_{c_start}_{c_end}_restart.json",
-                f"{raw_prefix}_{c_start}_{c_end}_restart.json",
-                f"{raw_prefix}_prefix_{c_start}_{c_end}.json",
-                f"{raw_prefix}_{c_start}_{c_end}.json",
-            ])
-        candidate_names.extend([
-            f"{stem}_prefix_restart.json",
-            f"{raw_prefix}_prefix_restart.json",
-            f"{stem}_restart.json",
-            f"{raw_prefix}_restart.json",
-            f"{stem}_prefix.json",
-            f"{raw_prefix}_prefix.json",
-            f"{stem}.json",
-            f"{raw_prefix}.json",
-        ])
-        for cand_dir in search_dirs:
-            for name in candidate_names:
-                cand = cand_dir / name
-                if cand.exists() and cand.is_file():
-                    args.json_file = cand
-                    logger.info(f"Auto-detected prefix JSON file: '{args.json_file}'")
-                    break
-            if args.json_file is not None:
-                break
+        if args.extxyz is None and base_group:
+            for cand_dir in search_dirs:
+                if cand_dir.exists() and cand_dir.is_dir():
+                    matches = sorted(
+                        [
+                            f for f in cand_dir.glob(f"*{base_group}*.xyz")
+                            if f.is_file() and not f.name.endswith(".tmp")
+                        ],
+                        key=lambda x: ("structs" in x.name, "stage" in x.name),
+                        reverse=True,
+                    )
+                    if matches:
+                        args.extxyz = matches[0]
+                        logger.info(f"Auto-detected ExtXYZ file from glob: '{args.extxyz}'")
+                        break
 
-    if args.parquet is None:
-        raise FileNotFoundError(
-            "Parquet file was not provided (--parquet) and could not be auto-discovered."
-        )
-    if not args.parquet.exists():
+    if args.json_file is None:
+        stem = None
+        raw_prefix = None
+        if args.parquet is not None:
+            stem = args.parquet.stem
+            raw_prefix = stem[6:] if stem.startswith("props_") else stem
+        elif args.extxyz is not None:
+            stem = args.extxyz.stem
+            raw_prefix = re.sub(r"^(?:.*?_)?structs_", "", stem)
+            if raw_prefix == stem and stem.startswith("stage"):
+                raw_prefix = re.sub(r"^stage\d+_", "", stem)
+        elif base_group:
+            stem = base_group
+            raw_prefix = base_group
+
+        if raw_prefix:
+            candidate_names = []
+            m_chunk = re.match(r"^(.*?)_(\d+)_(\d+)$", raw_prefix)
+            if m_chunk:
+                base_part = m_chunk.group(1)
+                c_start = m_chunk.group(2)
+                c_end = m_chunk.group(3)
+                candidate_names.extend([
+                    f"{base_part}_prefix_{c_start}_{c_end}_restart.json",
+                    f"{base_part}_{c_start}_{c_end}_restart.json",
+                    f"{base_part}_prefix.json",
+                    f"{base_part}.json",
+                ])
+            elif start_idx is not None and sample_sz is not None and sample_sz > 0:
+                c_start = start_idx
+                c_end = start_idx + sample_sz
+                candidate_names.extend([
+                    f"{raw_prefix}_prefix_{c_start}_{c_end}_restart.json",
+                    f"{raw_prefix}_{c_start}_{c_end}_restart.json",
+                    f"{raw_prefix}_prefix_{c_start}_{c_end}.json",
+                    f"{raw_prefix}_{c_start}_{c_end}.json",
+                ])
+            candidate_names.extend([
+                f"{raw_prefix}_prefix_restart.json",
+                f"{raw_prefix}_restart.json",
+                f"{raw_prefix}_prefix.json",
+                f"{raw_prefix}.json",
+            ])
+            if stem and stem != raw_prefix:
+                candidate_names.extend([
+                    f"{stem}_prefix_restart.json",
+                    f"{stem}_restart.json",
+                    f"{stem}_prefix.json",
+                    f"{stem}.json",
+                ])
+            for cand_dir in search_dirs:
+                for name in candidate_names:
+                    cand = cand_dir / name
+                    if cand.exists() and cand.is_file():
+                        args.json_file = cand
+                        logger.info(f"Auto-detected prefix JSON file: '{args.json_file}'")
+                        break
+                if args.json_file is not None:
+                    break
+
+    if args.parquet is not None and not args.parquet.exists():
         raise FileNotFoundError(f"Parquet file '{args.parquet}' does not exist.")
+
     if args.extxyz is None:
         raise FileNotFoundError(
             "ExtXYZ file was not provided (--extxyz) and could not be auto-discovered."
         )
     if not args.extxyz.exists():
         raise FileNotFoundError(f"ExtXYZ file '{args.extxyz}' does not exist.")
+
+    if args.parquet is None and args.json_file is None:
+        raise FileNotFoundError(
+            "Neither Parquet file (--parquet) nor JSON file (--json) was provided or could be auto-discovered to verify ExtXYZ."
+        )
+
     if args.json_file is not None and not args.json_file.exists():
         raise FileNotFoundError(f"JSON file '{args.json_file}' does not exist.")
 
@@ -417,15 +474,20 @@ def main() -> None:
                 restart_status_by_rel[k.rstrip("/") + "/"] = "in_json"
             logger.info(f"Loaded {len(json_keys)} keys from {args.json_file.name}.")
 
-    logger.info(f"Loading Parquet file from {args.parquet}...")
-    df = pd.read_parquet(args.parquet)
-    if "geom_sha1" not in df.columns:
-        raise KeyError(
-            "'geom_sha1' key is missing from Parquet file. Cannot perform alignment."
-        )
+    if args.parquet is not None:
+        logger.info(f"Loading Parquet file from {args.parquet}...")
+        df = pd.read_parquet(args.parquet)
+        if "geom_sha1" not in df.columns:
+            raise KeyError(
+                "'geom_sha1' key is missing from Parquet file. Cannot perform alignment."
+            )
+    else:
+        df = None
+        logger.info("No Parquet file provided or found. Verifying only JSON and ExtXYZ.")
 
     logger.info(f"Loading ExtXYZ file from {args.extxyz} (this may take a moment)...")
-    all_atoms = list(tqdm(iread(str(args.extxyz), index=":"), total=len(df), desc="Loading ExtXYZ"))
+    total_xyz = len(df) if df is not None else (len(assigned_json_keys) if assigned_json_keys is not None else None)
+    all_atoms = list(tqdm(iread(str(args.extxyz), index=":"), total=total_xyz, desc="Loading ExtXYZ"))
 
     if assigned_json_keys is not None and len(assigned_json_keys) > 0:
         target_rels = (
@@ -433,7 +495,7 @@ def main() -> None:
             | {k.rstrip("/") for k in assigned_json_keys}
             | {k.rstrip("/") + "/" for k in assigned_json_keys}
         )
-        if len(df) > len(assigned_json_keys):
+        if df is not None and len(df) > len(assigned_json_keys):
             if "argonne_rel" in df.columns:
                 mask = df["argonne_rel"].isin(target_rels)
                 if mask.any():
@@ -461,27 +523,31 @@ def main() -> None:
                 all_atoms = all_atoms[s_i:e_i]
     elif start_idx is not None or (sample_sz is not None and sample_sz > 0):
         s_i = start_idx if start_idx is not None else 0
-        e_i = min(s_i + sample_sz, len(df)) if (sample_sz is not None and sample_sz > 0) else len(df)
-        if len(df) > (e_i - s_i):
-            logger.info(f"Filtering Parquet records from {len(df)} down to slice [{s_i}:{e_i}].")
-            df = df.iloc[s_i:e_i].reset_index(drop=True)
+        if df is not None:
+            e_i = min(s_i + sample_sz, len(df)) if (sample_sz is not None and sample_sz > 0) else len(df)
+            if len(df) > (e_i - s_i):
+                logger.info(f"Filtering Parquet records from {len(df)} down to slice [{s_i}:{e_i}].")
+                df = df.iloc[s_i:e_i].reset_index(drop=True)
         e_xyz = min(s_i + sample_sz, len(all_atoms)) if (sample_sz is not None and sample_sz > 0) else len(all_atoms)
         if len(all_atoms) > (e_xyz - s_i):
             logger.info(f"Filtering ExtXYZ structures from {len(all_atoms)} down to slice [{s_i}:{e_xyz}].")
             all_atoms = all_atoms[s_i:e_xyz]
 
-    logger.info(f"Loaded {len(df)} records from Parquet.")
-    parquet_by_sha_list = defaultdict(list)
-    parquet_by_argone_rel_list = defaultdict(list)
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Indexing Parquet records", disable=len(df) == 0):
-        sha = row["geom_sha1"]
-        parquet_by_sha_list[sha].append(row)
-        rel = row.get("argonne_rel")
-        if rel is not None and pd.notna(rel):
-            parquet_by_argone_rel_list[rel].append(row)
+    parquet_by_sha = {}
+    parquet_by_argone_rel = {}
+    if df is not None:
+        logger.info(f"Loaded {len(df)} records from Parquet.")
+        parquet_by_sha_list = defaultdict(list)
+        parquet_by_argone_rel_list = defaultdict(list)
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Indexing Parquet records", disable=len(df) == 0):
+            sha = row["geom_sha1"]
+            parquet_by_sha_list[sha].append(row)
+            rel = row.get("argonne_rel")
+            if rel is not None and pd.notna(rel):
+                parquet_by_argone_rel_list[rel].append(row)
 
-    parquet_by_sha = {s: rows[-1] for s, rows in parquet_by_sha_list.items()}
-    parquet_by_argone_rel = {r: rows[-1] for r, rows in parquet_by_argone_rel_list.items()}
+        parquet_by_sha = {s: rows[-1] for s, rows in parquet_by_sha_list.items()}
+        parquet_by_argone_rel = {r: rows[-1] for r, rows in parquet_by_argone_rel_list.items()}
 
     logger.info(f"Loaded {len(all_atoms)} structures from ExtXYZ.")
 
@@ -610,7 +676,9 @@ def main() -> None:
             },
         }
 
-        dup_file = args.parquet.parent / f"duplicates_{args.parquet.stem}.json"
+        dup_parent = args.parquet.parent if args.parquet is not None else args.extxyz.parent
+        dup_stem = args.parquet.stem if args.parquet is not None else args.extxyz.stem
+        dup_file = dup_parent / f"duplicates_{dup_stem}.json"
         with open(dup_file, "w") as f:
             json.dump(duplicates, f, indent=4, default=str)
         if confirmed_duplicates_by_sha or xyz_dups_by_rel:
@@ -623,65 +691,68 @@ def main() -> None:
     pq_argonne_rels = set(parquet_by_argone_rel.keys())
     xyz_argonne_rels = set(xyz_by_argone_rel.keys())
 
-    missing_in_xyz = pq_keys - xyz_keys
-    missing_in_pq = xyz_keys - pq_keys
-    missing_in_xyz_argonne_rel = pq_argonne_rels - xyz_argonne_rels
-    missing_in_pq_argonne_rel = xyz_argonne_rels - pq_argonne_rels
+    if df is not None:
+        missing_in_xyz = pq_keys - xyz_keys
+        missing_in_pq = xyz_keys - pq_keys
+        missing_in_xyz_argonne_rel = pq_argonne_rels - xyz_argonne_rels
+        missing_in_pq_argonne_rel = xyz_argonne_rels - pq_argonne_rels
 
-    logger.info("\n--- Structural Alignment by sha---")
-    if missing_in_xyz:
-        logger.error(
-            f"❌ {len(missing_in_xyz)} structures found in Parquet but missing from ExtXYZ."
-        )
-    if missing_in_pq:
-        logger.error(
-            f"❌ {len(missing_in_pq)} structures found in ExtXYZ but missing from Parquet."
-        )
+        logger.info("\n--- Structural Alignment by sha---")
+        if missing_in_xyz:
+            logger.error(
+                f"❌ {len(missing_in_xyz)} structures found in Parquet but missing from ExtXYZ."
+            )
+        if missing_in_pq:
+            logger.error(
+                f"❌ {len(missing_in_pq)} structures found in ExtXYZ but missing from Parquet."
+            )
 
-    if not missing_in_xyz and not missing_in_pq:
-        logger.info(
-            f"✅ Structural alignment perfect: both files contain exactly {len(pq_keys)} uniquely matched molecules."
-        )
+        if not missing_in_xyz and not missing_in_pq:
+            logger.info(
+                f"✅ Structural alignment perfect: both files contain exactly {len(pq_keys)} uniquely matched molecules."
+            )
 
-    logger.info("\n--- Structural Alignment by argonne_rel ---")
-    if missing_in_xyz_argonne_rel:
-        logger.error(
-            f"❌ {len(missing_in_xyz_argonne_rel)} structures found in Parquet but missing from ExtXYZ."
-        )
-    if missing_in_pq_argonne_rel:
-        logger.error(
-            f"❌ {len(missing_in_pq_argonne_rel)} structures found in ExtXYZ but missing from Parquet."
-        )
+        logger.info("\n--- Structural Alignment by argonne_rel ---")
+        if missing_in_xyz_argonne_rel:
+            logger.error(
+                f"❌ {len(missing_in_xyz_argonne_rel)} structures found in Parquet but missing from ExtXYZ."
+            )
+        if missing_in_pq_argonne_rel:
+            logger.error(
+                f"❌ {len(missing_in_pq_argonne_rel)} structures found in ExtXYZ but missing from Parquet."
+            )
 
-    if not missing_in_xyz_argonne_rel and not missing_in_pq_argonne_rel:
-        logger.info(
-            f"✅ Structural alignment perfect: both files contain exactly {len(pq_argonne_rels)} uniquely matched molecules."
-        )
+        if not missing_in_xyz_argonne_rel and not missing_in_pq_argonne_rel:
+            logger.info(
+                f"✅ Structural alignment perfect: both files contain exactly {len(pq_argonne_rels)} uniquely matched molecules."
+            )
 
+    xyz_match = False
     if args.json_file is not None:
         logger.info(f"\n--- Alignment with JSON ({args.json_file.name}) ---")
         num_json = len(json_keys)
         num_pq = len(pq_argonne_rels)
         num_xyz = len(xyz_argonne_rels)
 
-        if num_json > num_pq and num_json > num_xyz:
-            logger.warning(
-                f"⚠️ JSON file contains more keys than Parquet and ExtXYZ: "
-                f"{num_json} in JSON vs {num_pq} in Parquet and {num_xyz} in ExtXYZ "
-                f"(surplus: {num_json - num_pq} vs Parquet, {num_json - num_xyz} vs ExtXYZ)."
-            )
-        if num_json > num_pq:
-            logger.warning(
-                f"⚠️ JSON file contains more keys than Parquet records: "
-                f"{num_json} JSON keys vs {num_pq} Parquet records "
-                f"({num_json - num_pq} surplus keys in JSON)."
-            )
-        elif num_json < num_pq:
-            logger.warning(
-                f"⚠️ Parquet records contain more keys than JSON: "
-                f"{num_pq} Parquet records vs {num_json} JSON keys "
-                f"({num_pq - num_json} surplus records in Parquet)."
-            )
+        if df is not None:
+            if num_json > num_pq and num_json > num_xyz:
+                logger.warning(
+                    f"⚠️ JSON file contains more keys than Parquet and ExtXYZ: "
+                    f"{num_json} in JSON vs {num_pq} in Parquet and {num_xyz} in ExtXYZ "
+                    f"(surplus: {num_json - num_pq} vs Parquet, {num_json - num_xyz} vs ExtXYZ)."
+                )
+            if num_json > num_pq:
+                logger.warning(
+                    f"⚠️ JSON file contains more keys than Parquet records: "
+                    f"{num_json} JSON keys vs {num_pq} Parquet records "
+                    f"({num_json - num_pq} surplus keys in JSON)."
+                )
+            elif num_json < num_pq:
+                logger.warning(
+                    f"⚠️ Parquet records contain more keys than JSON: "
+                    f"{num_pq} Parquet records vs {num_json} JSON keys "
+                    f"({num_pq - num_json} surplus records in Parquet)."
+                )
 
         if num_json > num_xyz:
             logger.warning(
@@ -696,39 +767,40 @@ def main() -> None:
                 f"({num_xyz - num_json} surplus structures in ExtXYZ)."
             )
 
-        missing_in_pq_from_json = json_keys - pq_argonne_rels
-        extra_in_pq_from_json = pq_argonne_rels - json_keys
         missing_in_xyz_from_json = json_keys - xyz_argonne_rels
         extra_in_xyz_from_json = xyz_argonne_rels - json_keys
 
         json_keys_norm = {k.rstrip("/") for k in json_keys}
-        pq_keys_norm = {k.rstrip("/") for k in pq_argonne_rels}
         xyz_keys_norm = {k.rstrip("/") for k in xyz_argonne_rels}
 
-        pq_match = False
-        if not missing_in_pq_from_json and not extra_in_pq_from_json:
-            logger.info(f"✅ All {len(json_keys)} keys in JSON match Parquet records.")
-            pq_match = True
-        elif json_keys_norm == pq_keys_norm:
-            logger.warning(
-                f"⚠️ Parquet records match JSON keys when ignoring trailing slashes ({len(json_keys)} keys)."
-            )
-            pq_match = True
-        else:
-            if missing_in_pq_from_json:
-                logger.error(
-                    f"❌ {len(missing_in_pq_from_json)} keys found in JSON but missing from Parquet."
-                )
-                sample = sorted(list(missing_in_pq_from_json))[:5]
-                logger.error(f"   Examples missing in Parquet: {sample}")
-            if extra_in_pq_from_json:
-                logger.error(
-                    f"❌ {len(extra_in_pq_from_json)} records found in Parquet but missing from JSON."
-                )
-                sample = sorted(list(extra_in_pq_from_json))[:5]
-                logger.error(f"   Examples extra in Parquet: {sample}")
+        if df is not None:
+            missing_in_pq_from_json = json_keys - pq_argonne_rels
+            extra_in_pq_from_json = pq_argonne_rels - json_keys
+            pq_keys_norm = {k.rstrip("/") for k in pq_argonne_rels}
 
-        xyz_match = False
+            pq_match = False
+            if not missing_in_pq_from_json and not extra_in_pq_from_json:
+                logger.info(f"✅ All {len(json_keys)} keys in JSON match Parquet records.")
+                pq_match = True
+            elif json_keys_norm == pq_keys_norm:
+                logger.warning(
+                    f"⚠️ Parquet records match JSON keys when ignoring trailing slashes ({len(json_keys)} keys)."
+                )
+                pq_match = True
+            else:
+                if missing_in_pq_from_json:
+                    logger.error(
+                        f"❌ {len(missing_in_pq_from_json)} keys found in JSON but missing from Parquet."
+                    )
+                    sample = sorted(list(missing_in_pq_from_json))[:5]
+                    logger.error(f"   Examples missing in Parquet: {sample}")
+                if extra_in_pq_from_json:
+                    logger.error(
+                        f"❌ {len(extra_in_pq_from_json)} records found in Parquet but missing from JSON."
+                    )
+                    sample = sorted(list(extra_in_pq_from_json))[:5]
+                    logger.error(f"   Examples extra in Parquet: {sample}")
+
         if not missing_in_xyz_from_json and not extra_in_xyz_from_json:
             logger.info(f"✅ All {len(json_keys)} keys in JSON match ExtXYZ structures.")
             xyz_match = True
@@ -751,203 +823,272 @@ def main() -> None:
                 sample = sorted(list(extra_in_xyz_from_json))[:5]
                 logger.error(f"   Examples extra in ExtXYZ: {sample}")
 
-        if pq_match and xyz_match:
-            logger.info(
-                f"✅ JSON Alignment perfect: All {len(json_keys)} keys correspond across JSON, Parquet, and ExtXYZ."
-            )
+        if df is not None:
+            if pq_match and xyz_match:
+                logger.info(
+                    f"✅ JSON Alignment perfect: All {len(json_keys)} keys correspond across JSON, Parquet, and ExtXYZ."
+                )
+            else:
+                logger.error(
+                    "❌ JSON Alignment failed: Key discrepancies detected between JSON, Parquet, and ExtXYZ."
+                )
         else:
-            logger.error(
-                "❌ JSON Alignment failed: Key discrepancies detected between JSON, Parquet, and ExtXYZ."
-            )
-
-    logger.info("\n--- Property Validation by argonne_rel ---")
-    common_argonne_rels = pq_argonne_rels.intersection(xyz_argonne_rels)
-    skip_keys = set(args.skip_keys)
-    mismatches = 0
-    mismatches_parquet_has_data_xyz_missing = 0
-    mismatches_xyz_has_data_parquet_missing = 0
-    mismatches_value_diff = 0
-    checked_props = {
-        key: 0
-        for key in df.columns
-        if key not in skip_keys
-        and key not in ("argonne_rel", "process_time_s")
-        and "time" not in key.lower()
-    }
-
-    for argonne_rel in tqdm(
-        sorted(common_argonne_rels),
-        desc="Validating properties",
-        disable=len(common_argonne_rels) == 0,
-    ):
-        row = parquet_by_argone_rel[argonne_rel]
-        info = xyz_by_argone_rel[argonne_rel].info
-
-        restart_tag = ""
-        if args.json_file is not None:
-            status = restart_status_by_rel.get(argonne_rel)
-            if status is not None:
-                restart_tag = f" [Restart status: {status}]"
+            if xyz_match:
+                logger.info(
+                    f"✅ JSON Alignment perfect: All {len(json_keys)} keys correspond across JSON and ExtXYZ."
+                )
             else:
-                restart_tag = " [Restart status: not_in_json]"
+                logger.error(
+                    "❌ JSON Alignment failed: Key discrepancies detected between JSON and ExtXYZ."
+                )
 
-        all_keys = set(row.keys()) | set(info.keys())
+    if df is not None:
+        logger.info("\n--- Property Validation by argonne_rel ---")
+        common_argonne_rels = pq_argonne_rels.intersection(xyz_argonne_rels)
+        skip_keys = set(args.skip_keys)
+        mismatches = 0
+        mismatches_parquet_has_data_xyz_missing = 0
+        mismatches_xyz_has_data_parquet_missing = 0
+        mismatches_value_diff = 0
+        checked_props = {
+            key: 0
+            for key in df.columns
+            if key not in skip_keys
+            and key not in ("argonne_rel", "process_time_s")
+            and "time" not in key.lower()
+        }
 
-        for key in sorted(all_keys):
-            if (
-                key in skip_keys
-                or key in ("argonne_rel", "process_time_s")
-                or "time" in key.lower()
-            ):
-                continue
+        for argonne_rel in tqdm(
+            sorted(common_argonne_rels),
+            desc="Validating properties",
+            disable=len(common_argonne_rels) == 0,
+        ):
+            row = parquet_by_argone_rel[argonne_rel]
+            info = xyz_by_argone_rel[argonne_rel].info
 
-            in_pq = key in row
-            pq_val = row[key] if in_pq else None
-            pq_is_null = (not in_pq) or _is_null_or_nan(pq_val)
-
-            in_xyz = key in info
-            xyz_val = info[key] if in_xyz else None
-            xyz_is_null = (not in_xyz) or _is_null_or_nan(xyz_val)
-
-            # 1. Both are null/absent: consistent
-            if pq_is_null and xyz_is_null:
-                continue
-
-            # 2. Data is present in Parquet, but missing/null in ExtXYZ
-            if not pq_is_null and xyz_is_null:
-                pq_summary = _format_val_summary(pq_val)
-                if not in_xyz:
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Data IS PRESENT in Parquet ({pq_summary}) but key is MISSING from ExtXYZ `atoms.info`.{restart_tag}"
-                    )
+            restart_tag = ""
+            if args.json_file is not None:
+                status = restart_status_by_rel.get(argonne_rel)
+                if status is not None:
+                    restart_tag = f" [Restart status: {status}]"
                 else:
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Data IS PRESENT in Parquet ({pq_summary}) but ExtXYZ `atoms.info` is NaN/None.{restart_tag}"
-                    )
-                mismatches += 1
-                mismatches_parquet_has_data_xyz_missing += 1
-                continue
+                    restart_tag = " [Restart status: not_in_json]"
 
-            # 3. Data is present in ExtXYZ, but missing/null in Parquet
-            if pq_is_null and not xyz_is_null:
-                xyz_summary = _format_val_summary(xyz_val)
-                if not in_pq:
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but key is MISSING from Parquet columns.{restart_tag}"
-                    )
-                else:
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but Parquet is NaN/None.{restart_tag}"
-                    )
-                mismatches += 1
-                mismatches_xyz_has_data_parquet_missing += 1
-                continue
+            all_keys = set(row.keys()) | set(info.keys())
 
-            # 4. Both have non-null data: compare values
-            if isinstance(pq_val, np.ndarray) and pq_val.ndim == 0:
-                pq_val = pq_val.item()
-            if isinstance(xyz_val, np.ndarray) and xyz_val.ndim == 0:
-                xyz_val = xyz_val.item()
+            for key in sorted(all_keys):
+                if (
+                    key in skip_keys
+                    or key in ("argonne_rel", "process_time_s")
+                    or "time" in key.lower()
+                ):
+                    continue
 
-            is_pq_seq = isinstance(pq_val, (np.ndarray, list, tuple, pd.Series))
-            is_xyz_seq = isinstance(xyz_val, (np.ndarray, list, tuple, pd.Series))
+                in_pq = key in row
+                pq_val = row[key] if in_pq else None
+                pq_is_null = (not in_pq) or _is_null_or_nan(pq_val)
 
-            if is_pq_seq or is_xyz_seq:
-                if not (is_pq_seq and is_xyz_seq):
-                    logger.error(
-                        f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                        f"Sequence type mismatch: Parquet={type(pq_val).__name__} != XYZ={type(xyz_val).__name__}.{restart_tag}"
-                    )
-                    mismatches += 1
-                    mismatches_value_diff += 1
-                else:
-                    pq_arr = _to_clean_array(pq_val)
-                    xyz_arr = _to_clean_array(xyz_val)
-                    if pq_arr.shape != xyz_arr.shape:
+                in_xyz = key in info
+                xyz_val = info[key] if in_xyz else None
+                xyz_is_null = (not in_xyz) or _is_null_or_nan(xyz_val)
+
+                # 1. Both are null/absent: consistent
+                if pq_is_null and xyz_is_null:
+                    continue
+
+                # 2. Data is present in Parquet, but missing/null in ExtXYZ
+                if not pq_is_null and xyz_is_null:
+                    pq_summary = _format_val_summary(pq_val)
+                    if not in_xyz:
                         logger.error(
                             f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                            f"Array shape mismatch: Parquet shape {pq_arr.shape} != XYZ shape {xyz_arr.shape}.{restart_tag}"
+                            f"Data IS PRESENT in Parquet ({pq_summary}) but key is MISSING from ExtXYZ `atoms.info`.{restart_tag}"
                         )
-                        mismatches += 1
-                        mismatches_value_diff += 1
-                    elif np.issubdtype(pq_arr.dtype, np.number) and np.issubdtype(xyz_arr.dtype, np.number):
-                        if not np.allclose(pq_arr, xyz_arr, rtol=1e-9, atol=1e-12, equal_nan=True):
-                            logger.error(
-                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"NDArray mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
-                            )
-                            mismatches += 1
-                            mismatches_value_diff += 1
                     else:
-                        if not np.array_equal(pq_arr, xyz_arr):
-                            logger.error(
-                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"List/Array mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
-                            )
-                            mismatches += 1
-                            mismatches_value_diff += 1
-            else:
-                if isinstance(pq_val, (bool, np.bool_)) or isinstance(xyz_val, (bool, np.bool_)):
-                    if not (isinstance(pq_val, (bool, np.bool_)) and isinstance(xyz_val, (bool, np.bool_))) or bool(pq_val) != bool(xyz_val):
                         logger.error(
                             f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                            f"Boolean mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
+                            f"Data IS PRESENT in Parquet ({pq_summary}) but ExtXYZ `atoms.info` is NaN/None.{restart_tag}"
+                        )
+                    mismatches += 1
+                    mismatches_parquet_has_data_xyz_missing += 1
+                    continue
+
+                # 3. Data is present in ExtXYZ, but missing/null in Parquet
+                if pq_is_null and not xyz_is_null:
+                    xyz_summary = _format_val_summary(xyz_val)
+                    if not in_pq:
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but key is MISSING from Parquet columns.{restart_tag}"
+                        )
+                    else:
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Data IS PRESENT in ExtXYZ `atoms.info` ({xyz_summary}) but Parquet is NaN/None.{restart_tag}"
+                        )
+                    mismatches += 1
+                    mismatches_xyz_has_data_parquet_missing += 1
+                    continue
+
+                # 4. Both have non-null data: compare values
+                if isinstance(pq_val, np.ndarray) and pq_val.ndim == 0:
+                    pq_val = pq_val.item()
+                if isinstance(xyz_val, np.ndarray) and xyz_val.ndim == 0:
+                    xyz_val = xyz_val.item()
+
+                is_pq_seq = isinstance(pq_val, (np.ndarray, list, tuple, pd.Series))
+                is_xyz_seq = isinstance(xyz_val, (np.ndarray, list, tuple, pd.Series))
+
+                if is_pq_seq or is_xyz_seq:
+                    if not (is_pq_seq and is_xyz_seq):
+                        logger.error(
+                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                            f"Sequence type mismatch: Parquet={type(pq_val).__name__} != XYZ={type(xyz_val).__name__}.{restart_tag}"
                         )
                         mismatches += 1
                         mismatches_value_diff += 1
-                elif isinstance(pq_val, (int, float, np.number)) and isinstance(xyz_val, (int, float, np.number)):
-                    if isinstance(pq_val, (float, np.floating)) or isinstance(xyz_val, (float, np.floating)):
-                        if not math.isclose(float(pq_val), float(xyz_val), rel_tol=1e-9, abs_tol=1e-12):
+                    else:
+                        pq_arr = _to_clean_array(pq_val)
+                        xyz_arr = _to_clean_array(xyz_val)
+                        if pq_arr.shape != xyz_arr.shape:
                             logger.error(
                                 f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"Numeric mismatch: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(float(pq_val) - float(xyz_val))}).{restart_tag}"
+                                f"Array shape mismatch: Parquet shape {pq_arr.shape} != XYZ shape {xyz_arr.shape}.{restart_tag}"
                             )
                             mismatches += 1
                             mismatches_value_diff += 1
+                        elif np.issubdtype(pq_arr.dtype, np.number) and np.issubdtype(xyz_arr.dtype, np.number):
+                            if not np.allclose(pq_arr, xyz_arr, rtol=1e-9, atol=1e-12, equal_nan=True):
+                                logger.error(
+                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                    f"NDArray mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
+                                )
+                                mismatches += 1
+                                mismatches_value_diff += 1
+                        else:
+                            if not np.array_equal(pq_arr, xyz_arr):
+                                logger.error(
+                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                    f"List/Array mismatch: Parquet={_format_val_summary(pq_val)} != XYZ={_format_val_summary(xyz_val)}.{restart_tag}"
+                                )
+                                mismatches += 1
+                                mismatches_value_diff += 1
+                else:
+                    if isinstance(pq_val, (bool, np.bool_)) or isinstance(xyz_val, (bool, np.bool_)):
+                        if not (isinstance(pq_val, (bool, np.bool_)) and isinstance(xyz_val, (bool, np.bool_))) or bool(pq_val) != bool(xyz_val):
+                            logger.error(
+                                f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                f"Boolean mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
+                            )
+                            mismatches += 1
+                            mismatches_value_diff += 1
+                    elif isinstance(pq_val, (int, float, np.number)) and isinstance(xyz_val, (int, float, np.number)):
+                        if isinstance(pq_val, (float, np.floating)) or isinstance(xyz_val, (float, np.floating)):
+                            if not math.isclose(float(pq_val), float(xyz_val), rel_tol=1e-9, abs_tol=1e-12):
+                                logger.error(
+                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                    f"Numeric mismatch: Parquet={pq_val} != XYZ={xyz_val} (diff={abs(float(pq_val) - float(xyz_val))}).{restart_tag}"
+                                )
+                                mismatches += 1
+                                mismatches_value_diff += 1
+                        else:
+                            if pq_val != xyz_val:
+                                logger.error(
+                                    f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
+                                    f"Integer mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
+                                )
+                                mismatches += 1
+                                mismatches_value_diff += 1
                     else:
                         if pq_val != xyz_val:
                             logger.error(
                                 f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                                f"Integer mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
+                                f"Value mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
                             )
                             mismatches += 1
                             mismatches_value_diff += 1
-                else:
-                    if pq_val != xyz_val:
-                        logger.error(
-                            f"  [Mismatch] argonne_rel={argonne_rel}, key={key}: "
-                            f"Value mismatch: Parquet={pq_val!r} != XYZ={xyz_val!r}.{restart_tag}"
-                        )
-                        mismatches += 1
-                        mismatches_value_diff += 1
 
-            if key in checked_props:
-                checked_props[key] += 1
+                if key in checked_props:
+                    checked_props[key] += 1
 
-    if mismatches == 0:
-        logger.info(
-            f"\n✅ Data Consistency Verified! 0 mismatches found across {len(common_argonne_rels)} shared structures."
-        )
+        if mismatches == 0:
+            logger.info(
+                f"\n✅ Data Consistency Verified! 0 mismatches found across {len(common_argonne_rels)} shared structures."
+            )
+        else:
+            logger.error(
+                f"\n❌ Verification Failed. Encountered {mismatches} property inconsistencies."
+            )
+            if mismatches_parquet_has_data_xyz_missing > 0:
+                logger.error(
+                    f"   - {mismatches_parquet_has_data_xyz_missing} property instances: data present in Parquet but missing from ExtXYZ `atoms.info`."
+                )
+            if mismatches_xyz_has_data_parquet_missing > 0:
+                logger.error(
+                    f"   - {mismatches_xyz_has_data_parquet_missing} property instances: data present in ExtXYZ `atoms.info` but missing from Parquet."
+                )
+            if mismatches_value_diff > 0:
+                logger.error(
+                    f"   - {mismatches_value_diff} property instances: values differ between Parquet and ExtXYZ."
+                )
     else:
-        logger.error(
-            f"\n❌ Verification Failed. Encountered {mismatches} property inconsistencies."
-        )
-        if mismatches_parquet_has_data_xyz_missing > 0:
-            logger.error(
-                f"   - {mismatches_parquet_has_data_xyz_missing} property instances: data present in Parquet but missing from ExtXYZ `atoms.info`."
+        logger.info("\n--- ExtXYZ Data Integrity Verification ---")
+        common_argonne_rels = json_keys.intersection(xyz_argonne_rels)
+        if not common_argonne_rels and json_keys_norm and xyz_keys_norm:
+            common_argonne_rels = {k for k in xyz_argonne_rels if k.rstrip("/") in json_keys_norm}
+
+        mismatches = 0
+        corrupted_structures = 0
+        for rel, at in tqdm(xyz_by_argone_rel.items(), desc="Validating ExtXYZ integrity", disable=len(xyz_by_argone_rel) == 0):
+            try:
+                pos = at.get_positions()
+                if pos is None or pos.shape[0] != len(at) or pos.shape[1] != 3:
+                    logger.error(f"  [Integrity Error] argonne_rel={rel}: Invalid positions shape {getattr(pos, 'shape', None)}")
+                    mismatches += 1
+                    corrupted_structures += 1
+                    continue
+                if np.isnan(pos).any() or np.isinf(pos).any():
+                    logger.error(f"  [Integrity Error] argonne_rel={rel}: Positions contain NaN or Inf values.")
+                    mismatches += 1
+                    corrupted_structures += 1
+                    continue
+            except Exception as e:
+                logger.error(f"  [Integrity Error] argonne_rel={rel}: Failed to get positions: {e}")
+                mismatches += 1
+                corrupted_structures += 1
+                continue
+
+            try:
+                syms = at.get_chemical_symbols()
+                nums = at.get_atomic_numbers()
+                if len(syms) == 0 or len(nums) == 0 or any(n <= 0 for n in nums):
+                    logger.error(f"  [Integrity Error] argonne_rel={rel}: Empty or invalid atomic numbers.")
+                    mismatches += 1
+                    corrupted_structures += 1
+            except Exception as e:
+                logger.error(f"  [Integrity Error] argonne_rel={rel}: Failed to inspect atoms: {e}")
+                mismatches += 1
+                corrupted_structures += 1
+
+        missing_in_xyz_from_json = json_keys - xyz_argonne_rels
+        extra_in_xyz_from_json = xyz_argonne_rels - json_keys
+        if json_keys_norm != xyz_keys_norm:
+            unaligned = (json_keys_norm ^ xyz_keys_norm)
+            mismatches += len(unaligned)
+
+        num_shared = len(common_argonne_rels) if common_argonne_rels else len(xyz_by_argone_rel)
+        if mismatches == 0 and xyz_match:
+            logger.info(
+                f"\n✅ Data Consistency Verified! 0 mismatches found across {num_shared} shared structures."
             )
-        if mismatches_xyz_has_data_parquet_missing > 0:
+        else:
             logger.error(
-                f"   - {mismatches_xyz_has_data_parquet_missing} property instances: data present in ExtXYZ `atoms.info` but missing from Parquet."
+                f"\n❌ Verification Failed. Encountered {mismatches} inconsistencies between JSON and ExtXYZ."
             )
-        if mismatches_value_diff > 0:
-            logger.error(
-                f"   - {mismatches_value_diff} property instances: values differ between Parquet and ExtXYZ."
-            )
+            if corrupted_structures > 0:
+                logger.error(f"   - {corrupted_structures} ExtXYZ structures have corrupted positions/symbols.")
+            if not xyz_match:
+                logger.error(f"   - JSON and ExtXYZ key mismatch: {len(missing_in_xyz_from_json)} missing in ExtXYZ, {len(extra_in_xyz_from_json)} extra in ExtXYZ.")
 
 
 if __name__ == "__main__":

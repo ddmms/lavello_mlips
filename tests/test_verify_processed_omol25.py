@@ -914,5 +914,115 @@ def test_cli_and_download_support_sample_flag(tmp_path):
         assert parsed_dl.sample_size == 24
 
 
+def test_verify_without_parquet_success(tmp_path):
+    """Test verify_omol25 succeeds when no parquet is provided, verifying only json and extxyz."""
+    json_file = tmp_path / "data_prefix.json"
+    xyz_file = tmp_path / "structs_data.xyz"
+
+    keys = ["m_1/", "m_2/", "m_3/"]
+    json_data = {k: {"processed": True} for k in keys}
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+
+    atoms_list = []
+    for i, k in enumerate(keys):
+        at = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74 + i * 0.01)])
+        at.info["geom_sha1"] = f"sha_{i}"
+        at.info["argonne_rel"] = k
+        atoms_list.append(at)
+    write(str(xyz_file), atoms_list, format="extxyz")
+
+    cmd = [
+        "verify_omol25",
+        "--extxyz", str(xyz_file),
+        "--json", str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"Failed:\n{res.stdout}\n{res.stderr}"
+    assert "No Parquet file provided" in res.stdout
+    assert "Data Consistency Verified" in res.stdout
+    assert "0 mismatches" in res.stdout
+    assert "All 3 keys in JSON match ExtXYZ structures" in res.stdout
+
+
+def test_verify_without_parquet_key_mismatch(tmp_path):
+    """Test verify_omol25 detects key discrepancies when only json and extxyz are verified."""
+    json_file = tmp_path / "mismatch_prefix.json"
+    xyz_file = tmp_path / "structs_mismatch.xyz"
+
+    json_data = {"m_1/": {"processed": True}, "m_missing/": {"processed": True}}
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+
+    at = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    at.info["geom_sha1"] = "sha_1"
+    at.info["argonne_rel"] = "m_1/"
+    write(str(xyz_file), [at], format="extxyz")
+
+    cmd = [
+        "verify_omol25",
+        "--extxyz", str(xyz_file),
+        "--json", str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Verification Failed" in res.stdout
+    assert "JSON Alignment failed" in res.stdout
+    assert "1 keys found in JSON but missing from ExtXYZ" in res.stdout
+
+
+def test_verify_without_parquet_autodiscovery_with_stage1_prefix(tmp_path):
+    """Test verify_omol25 auto-discovers stage1_structs_*.xyz in output-dir without parquet."""
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    json_file = tmp_path / "rna_prefix.json"
+    xyz_file = output_dir / "stage1_structs_rna.xyz"
+
+    json_data = {"rna_0/": {"processed": True}, "rna_1/": {"processed": True}}
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+
+    a1 = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    a1.info["geom_sha1"] = "sha_0"
+    a1.info["argonne_rel"] = "rna_0/"
+
+    a2 = Atoms("O2", positions=[(0, 0, 0), (0, 0, 1.2)])
+    a2.info["geom_sha1"] = "sha_1"
+    a2.info["argonne_rel"] = "rna_1/"
+    write(str(xyz_file), [a1, a2], format="extxyz")
+
+    # Call verify_omol25 with --output-dir and --json, no --extxyz and no --parquet
+    cmd = [
+        "verify_omol25",
+        "--output-dir", str(output_dir),
+        "--json", str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"Failed:\n{res.stdout}\n{res.stderr}"
+    assert "Auto-detected ExtXYZ file" in res.stdout
+    assert "stage1_structs_rna.xyz" in res.stdout
+    assert "Data Consistency Verified" in res.stdout
+
+
+def test_verify_without_parquet_corrupted_structure_detected(tmp_path):
+    """Test verify_omol25 detects corrupted structures (e.g. NaN coordinates) when verifying without parquet."""
+    json_file = tmp_path / "corrupt_prefix.json"
+    xyz_file = tmp_path / "structs_corrupt.xyz"
+
+    json_data = {"c_0/": {"processed": True}}
+    json_file.write_text(json.dumps(json_data), encoding="utf-8")
+
+    at = Atoms("H2", positions=[(np.nan, 0, 0), (0, 0, 0.74)])
+    at.info["geom_sha1"] = "sha_bad"
+    at.info["argonne_rel"] = "c_0/"
+    write(str(xyz_file), [at], format="extxyz")
+
+    cmd = [
+        "verify_omol25",
+        "--extxyz", str(xyz_file),
+        "--json", str(json_file),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert "Positions contain NaN or Inf values" in res.stdout
+    assert "Verification Failed" in res.stdout
+
+
+
 
 
