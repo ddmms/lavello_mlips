@@ -133,6 +133,165 @@ def safe_read_extxyz(path: Union[str, Path]) -> List[Any]:
     return frames
 
 
+_RE_ARGONNE_REL = re.compile(r'argonne_rel=(?:"([^"]+)"|(\S+))')
+_RE_HEADER = re.compile(r"^\s*(\d+)\s*$")
+
+
+def fast_extract_keys_from_extxyz_file(in_path: Union[str, Path]) -> set:
+    """Quickly extract all argonne_rel keys from valid frames in an ExtXYZ file without building Atoms objects."""
+    in_path = Path(in_path)
+    if not in_path.exists() or in_path.stat().st_size == 0:
+        return set()
+    keys = set()
+    with open(in_path, "r", encoding="utf-8", errors="replace", buffering=1024 * 1024) as f_in:
+        pending_line = None
+        while True:
+            line1 = pending_line if pending_line is not None else f_in.readline()
+            pending_line = None
+            if not line1:
+                break
+            stripped = line1.strip()
+            if not stripped:
+                continue
+            try:
+                natoms = int(stripped)
+            except ValueError:
+                continue
+            if natoms <= 0:
+                continue
+            line2 = f_in.readline()
+            if not line2:
+                break
+            if _RE_HEADER.match(line2):
+                pending_line = line2
+                continue
+
+            m = _RE_ARGONNE_REL.search(line2)
+            rel = (m.group(1) or m.group(2)) if m else None
+
+            is_truncated = False
+            atom_count = 0
+            for _ in range(natoms):
+                l = f_in.readline()
+                if not l:
+                    is_truncated = True
+                    break
+                if _RE_HEADER.match(l):
+                    is_truncated = True
+                    pending_line = l
+                    break
+                atom_count += 1
+
+            if is_truncated or atom_count < natoms:
+                continue
+
+            if rel:
+                keys.add(rel)
+    return keys
+
+
+def fast_stream_extxyz_file(
+    in_path: Union[str, Path],
+    f_out: Any,
+    seen_keys: set,
+    saved_keys: set,
+    skip_keys: Optional[set] = None,
+    dropped_keys: Optional[set] = None,
+) -> Tuple[int, int]:
+    """
+    Stream frames directly from an ExtXYZ file into an open output file without parsing
+    into ase.Atoms objects.
+
+    - Validates natoms and frame boundaries.
+    - Discards corrupted/truncated frames (e.g., unexpected EOF or missing atom lines).
+    - Extracts `argonne_rel` to deduplicate frames.
+    - Tracks saved keys in `saved_keys` and dropped keys in `dropped_keys`.
+    - Returns (valid_count, dropped_count).
+    """
+    in_path = Path(in_path)
+    if not in_path.exists() or in_path.stat().st_size == 0:
+        return 0, 0
+
+    valid_count = 0
+    dropped_count = 0
+
+    with open(in_path, "r", encoding="utf-8", errors="replace", buffering=1024 * 1024) as f_in:
+        pending_line = None
+        while True:
+            line1 = pending_line if pending_line is not None else f_in.readline()
+            pending_line = None
+            if not line1:
+                break
+            stripped = line1.strip()
+            if not stripped:
+                continue
+            try:
+                natoms = int(stripped)
+            except ValueError:
+                dropped_count += 1
+                continue
+            if natoms <= 0:
+                dropped_count += 1
+                continue
+
+            line2 = f_in.readline()
+            if not line2:
+                dropped_count += 1
+                break
+            if _RE_HEADER.match(line2):
+                dropped_count += 1
+                pending_line = line2
+                continue
+
+            m = _RE_ARGONNE_REL.search(line2)
+            rel = (m.group(1) or m.group(2)) if m else None
+
+            atom_lines = []
+            is_truncated = False
+            for _ in range(natoms):
+                l = f_in.readline()
+                if not l:
+                    is_truncated = True
+                    break
+                if _RE_HEADER.match(l):
+                    is_truncated = True
+                    pending_line = l
+                    break
+                atom_lines.append(l)
+
+            if is_truncated or len(atom_lines) < natoms:
+                dropped_count += 1
+                if rel and dropped_keys is not None:
+                    dropped_keys.add(rel)
+                continue
+
+            if skip_keys and rel and rel in skip_keys:
+                continue
+            if rel and rel in seen_keys:
+                continue
+            if rel:
+                seen_keys.add(rel)
+                saved_keys.add(rel)
+
+            if not line1.endswith("\n"):
+                line1 += "\n"
+            if not line2.endswith("\n"):
+                line2 += "\n"
+            f_out.write(line1)
+            f_out.write(line2)
+            f_out.writelines(atom_lines)
+            if atom_lines and not atom_lines[-1].endswith("\n"):
+                f_out.write("\n")
+            valid_count += 1
+
+    if dropped_count > 0:
+        logger.warning(
+            f"ExtXYZ stream {in_path.name}: streamed {valid_count} valid frames, dropped {dropped_count} bad/truncated frame(s)."
+        )
+
+    return valid_count, dropped_count
+
+
 # ---------- dipole ----------
 RE_DIP = re.compile(
     r"Total\s+Dipole\s+Moment(?:\s*\((a\.u\.|Debye)\))?\s*:\s*"
@@ -1557,6 +1716,7 @@ class OmolDataProcessor(S3DataProcessor):
         """Merges per-rank part files into single Parquet and ExtXYZ outputs."""
         had_merge_error = False
         failed_keys = set()
+        is_xyz_only = False
 
         # Keys present before this merge (if restart and final files existed)
         existing_pq_keys = set()
@@ -1612,7 +1772,105 @@ class OmolDataProcessor(S3DataProcessor):
                 pf.unlink(missing_ok=True)
 
         # --- ExtXYZ merge ---
-        output_xyz_final = self.output_dir / f"structs_{self.group_name}.xyz"
+        output_xyz_final = getattr(
+            self,
+            "output_xyz_final",
+            self.output_dir / f"structs_{self.group_name}.xyz",
+        )
+        xyz_parts = [
+            xf
+            for xf in sorted(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
+            if xf != output_xyz_final
+            and not xf.name.endswith(".tmp")
+            and xyz_pattern.match(xf.name)
+        ]
+
+        if not all_dfs and xyz_parts:
+            # Fast ExtXYZ streaming when no Parquet files are present
+            prefix = getattr(self, "merge_prefix", "stage1") or "stage1"
+            prefix_clean = prefix.strip().rstrip("_")
+            output_xyz_final = self.output_dir / f"{prefix_clean}_structs_{self.group_name}.xyz"
+            logger.warning(
+                f"No Parquet part files found for {self.group_name}. "
+                f"Merging ExtXYZ parts without Parquet files, adding prefix '{prefix_clean}' to merged file: {output_xyz_final.name}"
+            )
+            seen_keys = set()
+            saved_keys = set()
+            dropped_keys = set()
+            total_structures = 0
+            total_dropped = 0
+            successful_xfs = []
+            tmp_xyz = self.output_dir / f"{output_xyz_final.name}.tmp"
+            xyz_write_success = False
+            try:
+                chunk_keys = set()
+                if self.restart and output_xyz_final.exists():
+                    for xf in xyz_parts:
+                        chunk_keys.update(fast_extract_keys_from_extxyz_file(xf))
+
+                with open(tmp_xyz, "w", encoding="utf-8", buffering=1024 * 1024) as f_out:
+                    if self.restart and output_xyz_final.exists():
+                        c, d = fast_stream_extxyz_file(
+                            output_xyz_final,
+                            f_out,
+                            seen_keys,
+                            saved_keys,
+                            skip_keys=chunk_keys,
+                            dropped_keys=dropped_keys,
+                        )
+                        total_structures += c
+                        total_dropped += d
+                    for xf in tqdm(
+                        xyz_parts,
+                        desc=f"Streaming ExtXYZ parts ({prefix_clean})",
+                        disable=len(xyz_parts) == 0,
+                    ):
+                        c, d = fast_stream_extxyz_file(
+                            xf,
+                            f_out,
+                            seen_keys,
+                            saved_keys,
+                            dropped_keys=dropped_keys,
+                        )
+                        total_structures += c
+                        total_dropped += d
+                        successful_xfs.append(xf)
+
+                tmp_xyz.replace(output_xyz_final)
+                xyz_write_success = True
+                logger.info(
+                    f"Merged ExtXYZ into {output_xyz_final} ({total_structures} structures, {total_dropped} dropped frames)"
+                )
+            except Exception as e:
+                had_merge_error = True
+                logger.error(f"Failed to stream final ExtXYZ {output_xyz_final}: {e}", exc_info=True)
+                tmp_xyz.unlink(missing_ok=True)
+
+            if xyz_write_success:
+                for xf in successful_xfs:
+                    xf.unlink(missing_ok=True)
+                final_saved_keys = saved_keys
+            else:
+                final_saved_keys = set()
+
+            for k in final_saved_keys:
+                if k in self.data:
+                    self.data[k]["processed"] = True
+
+            for x, item in self.data.items():
+                if item.get("processed", False) and x not in final_saved_keys:
+                    failed_keys.add(x)
+
+            if failed_keys or dropped_keys or had_merge_error:
+                for k in (failed_keys | dropped_keys):
+                    if k in self.data:
+                        logger.warning(
+                            f"Setting processed=False for '{k}' in restart file due to merge error."
+                        )
+                        self.data[k]["processed"] = False
+                self._save_restart_file()
+            return
+
         all_atoms = []
         if self.restart and output_xyz_final.exists():
             try:
@@ -1627,18 +1885,6 @@ class OmolDataProcessor(S3DataProcessor):
                 logger.warning(f"Could not read existing XYZ for restart: {e}")
                 had_merge_error = True
 
-        output_xyz_final = getattr(
-            self,
-            "output_xyz_final",
-            self.output_dir / f"structs_{self.group_name}.xyz",
-        )
-        xyz_parts = [
-            xf
-            for xf in sorted(self.output_dir.glob(f"structs_{self.group_name}_*.xyz"))
-            if xf != output_xyz_final
-            and not xf.name.endswith(".tmp")
-            and xyz_pattern.match(xf.name)
-        ]
         successful_xfs = []
         for xf in tqdm(xyz_parts, desc="Merging ExtXYZ parts", disable=len(xyz_parts) == 0):
             try:
@@ -1689,29 +1935,7 @@ class OmolDataProcessor(S3DataProcessor):
             logger.warning(
                 f"{len(mismatched_keys)} structures mismatched between Parquet and ExtXYZ during merge."
             )
-        is_xyz_only = (not all_dfs) and bool(all_atoms)
-        if is_xyz_only:
-            prefix = getattr(self, "merge_prefix", "stage1") or "stage1"
-            prefix_clean = prefix.strip().rstrip("_")
-            output_xyz_final = self.output_dir / f"{prefix_clean}_structs_{self.group_name}.xyz"
-            logger.warning(
-                f"No Parquet part files found for {self.group_name}. "
-                f"Merging ExtXYZ parts without Parquet files, adding prefix '{prefix_clean}' to merged file: {output_xyz_final.name}"
-            )
-            seen_keys = set()
-            dedup_atoms = []
-            for at in reversed(all_atoms):
-                rel = at.info.get("argonne_rel")
-                if rel is not None:
-                    if rel not in seen_keys:
-                        seen_keys.add(rel)
-                        dedup_atoms.append(at)
-                else:
-                    dedup_atoms.append(at)
-            dedup_atoms.reverse()
-            all_atoms = dedup_atoms
-            valid_keys = xyz_keys
-        elif "argonne_rel" in final_df.columns:
+        if "argonne_rel" in final_df.columns:
             if len(pq_keys) != len(valid_keys) or len(final_df) != len(valid_keys):
                 final_df = final_df[final_df["argonne_rel"].isin(valid_keys)].drop_duplicates(
                     subset=["argonne_rel"], keep="last"
@@ -2059,40 +2283,55 @@ def merge_chunks(
 
         xyz_items.sort(key=lambda x: x["sort_key"])
 
-        all_atoms = []
-        if final_xyz.exists():
-            try:
-                prev_atoms = safe_read_extxyz(final_xyz)
-                all_atoms.extend(prev_atoms)
-            except Exception as e:
-                logger.warning(f"Could not read existing final ExtXYZ {final_xyz}: {e}")
-
-        for it in tqdm(xyz_items, desc=f"Merging ExtXYZ ({prefix_clean})", disable=len(xyz_items) == 0):
-            try:
-                atoms_part = safe_read_extxyz(it["xf"])
-                all_atoms.extend(atoms_part)
-            except Exception as e:
-                logger.warning(f"Failed to read ExtXYZ file {it['xf']}: {e}. Skipping unreadable frames.")
-
         seen_keys = set()
-        final_atoms = []
-        for at in reversed(all_atoms):
-            rel = at.info.get("argonne_rel")
-            if rel is not None:
-                if rel not in seen_keys:
-                    seen_keys.add(rel)
-                    final_atoms.append(at)
-            else:
-                final_atoms.append(at)
-        final_atoms.reverse()
-
+        saved_keys = set()
+        dropped_keys = set()
+        total_structures = 0
+        total_dropped = 0
         tmp_xyz = output_dir / f"{final_xyz.name}.tmp"
-        write(str(tmp_xyz), final_atoms, format="extxyz")
-        tmp_xyz.replace(final_xyz)
-        logger.info(
-            f"Successfully merged {len(xyz_items)} ExtXYZ chunks/parts into {final_xyz} "
-            f"({len(final_atoms)} structures)."
-        )
+
+        try:
+            chunk_keys = set()
+            if final_xyz.exists():
+                for it in xyz_items:
+                    chunk_keys.update(fast_extract_keys_from_extxyz_file(it["xf"]))
+
+            with open(tmp_xyz, "w", encoding="utf-8", buffering=1024 * 1024) as f_out:
+                if final_xyz.exists():
+                    c, d = fast_stream_extxyz_file(
+                        final_xyz,
+                        f_out,
+                        seen_keys,
+                        saved_keys,
+                        skip_keys=chunk_keys,
+                        dropped_keys=dropped_keys,
+                    )
+                    total_structures += c
+                    total_dropped += d
+                for it in tqdm(
+                    xyz_items,
+                    desc=f"Streaming ExtXYZ ({prefix_clean})",
+                    disable=len(xyz_items) == 0,
+                ):
+                    c, d = fast_stream_extxyz_file(
+                        it["xf"],
+                        f_out,
+                        seen_keys,
+                        saved_keys,
+                        dropped_keys=dropped_keys,
+                    )
+                    total_structures += c
+                    total_dropped += d
+
+            tmp_xyz.replace(final_xyz)
+            logger.info(
+                f"Successfully merged {len(xyz_items)} ExtXYZ chunks/parts into {final_xyz} "
+                f"({total_structures} structures, {total_dropped} dropped frames)."
+            )
+        except Exception as e:
+            logger.error(f"Failed to merge ExtXYZ files into {final_xyz}: {e}", exc_info=True)
+            tmp_xyz.unlink(missing_ok=True)
+            raise
 
         # Consolidate restart files
         chunk_rst_pattern = re.compile(
@@ -2133,14 +2372,16 @@ def merge_chunks(
             except Exception as e:
                 logger.warning(f"Could not read chunk restart file {rf}: {e}")
 
-        saved_keys = {
-            at.info.get("argonne_rel")
-            for at in final_atoms
-            if at.info.get("argonne_rel") is not None
-        }
         for k in saved_keys:
             if k in base_data and isinstance(base_data[k], dict):
                 base_data[k]["processed"] = True
+
+        for k in dropped_keys:
+            if k in base_data and isinstance(base_data[k], dict) and k not in saved_keys:
+                logger.warning(
+                    f"Setting processed=False for '{k}' in consolidated restart file due to corrupted/truncated frame."
+                )
+                base_data[k]["processed"] = False
 
         if base_data:
             tmp_rst = data_source.parent / f"{stem_base}_restart.json.tmp"

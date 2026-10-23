@@ -2041,6 +2041,134 @@ def test_cli_merge_chunks_without_parquet(tmp_path):
     assert atoms_res[0].info["argonne_rel"] == "m1/"
 
 
+def test_fast_stream_extxyz_file_handling(tmp_path):
+    """Test fast_stream_extxyz_file with various corrupted frames, headers, and deduplication."""
+    from lavello_mlips.process_omol25 import (
+        fast_stream_extxyz_file,
+        fast_extract_keys_from_extxyz_file,
+    )
+
+    f1 = tmp_path / "part1.xyz"
+    f1.write_text(
+        # Valid frame 1
+        '2\nProperties=species:S:1:pos:R:3 argonne_rel="mol_1/" data_id=1\nH 0 0 0\nH 0 0 1\n'
+        # Valid frame 2
+        '2\nProperties=species:S:1:pos:R:3 argonne_rel="mol_2/" data_id=2\nO 0 0 0\nO 0 0 1\n'
+        # Truncated frame at EOF (expected 210, got 0)
+        '210\nProperties=species:S:1:pos:R:3 argonne_rel="mol_bad1/" data_id=3\n',
+        encoding="utf-8",
+    )
+
+    f2 = tmp_path / "part2.xyz"
+    f2.write_text(
+        # Bad frame in middle: expected 50, but next header appears immediately
+        '50\nProperties=species:S:1:pos:R:3 argonne_rel="mol_bad2/" data_id=4\n'
+        # Valid frame recovered after bad frame
+        '2\nProperties=species:S:1:pos:R:3 argonne_rel="mol_2/" data_id=2\nO 0 0 0\nO 0 0 1\n'  # duplicate of mol_2
+        # Orphan header followed immediately by another header
+        '99\n'
+        '2\nProperties=species:S:1:pos:R:3 argonne_rel="mol_3/" data_id=5\nN 0 0 0\nN 0 0 1\n',
+        encoding="utf-8",
+    )
+
+    # Test fast_extract_keys_from_extxyz_file (extracts only valid frames)
+    keys1 = fast_extract_keys_from_extxyz_file(f1)
+    assert keys1 == {"mol_1/", "mol_2/"}
+    keys2 = fast_extract_keys_from_extxyz_file(f2)
+    assert keys2 == {"mol_2/", "mol_3/"}
+
+    # Stream into merged file
+    out = tmp_path / "merged.xyz"
+    seen = set()
+    saved = set()
+    dropped = set()
+    total_valid = 0
+    total_dropped = 0
+
+    with open(out, "w", encoding="utf-8") as f_out:
+        c1, d1 = fast_stream_extxyz_file(f1, f_out, seen, saved, dropped_keys=dropped)
+        total_valid += c1
+        total_dropped += d1
+
+        c2, d2 = fast_stream_extxyz_file(f2, f_out, seen, saved, dropped_keys=dropped)
+        total_valid += c2
+        total_dropped += d2
+
+    assert total_valid == 3  # mol_1/, mol_2/ from f1, mol_3/ from f2 (mol_2/ in f2 was duplicate)
+    assert total_dropped == 3  # mol_bad1 at EOF, mol_bad2 in middle, orphan header 99
+    assert saved == {"mol_1/", "mol_2/", "mol_3/"}
+    assert "mol_bad1/" in dropped or "mol_bad2/" in dropped
+
+    # Verify merged file with ASE
+    res = ase.io.read(str(out), index=":")
+    assert len(res) == 3
+    assert [at.info["argonne_rel"] for at in res] == ["mol_1/", "mol_2/", "mol_3/"]
+
+
+def test_merge_chunks_streaming_large_batch_without_parquet(tmp_path):
+    """Test merge_chunks streams thousands of frames quickly without parquet files, dropping corrupted frames."""
+    from lavello_mlips.process_omol25 import merge_chunks
+
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    data_source = tmp_path / "large_prefix.json"
+
+    n_structures = 2000
+    base_data = {f"struct_{i}/": {"key": f"s_{i}", "processed": False} for i in range(n_structures)}
+    base_data["struct_corrupt/"] = {"key": "s_bad", "processed": True}
+    with open(data_source, "w", encoding="utf-8") as f:
+        json.dump(base_data, f)
+
+    # Chunk 1: structures 0 to 1000
+    lines_c1 = []
+    for i in range(1000):
+        lines_c1.append(
+            f'2\nProperties=species:S:1:pos:R:3 argonne_rel="struct_{i}/" data_id={i}\n'
+            f'H 0 0 0\nH 0 0 1\n'
+        )
+    (output_dir / "structs_large_0_1000.xyz").write_text("".join(lines_c1), encoding="utf-8")
+
+    # Chunk 2: structures 1000 to 2000 + duplicate of struct_500 + 1 corrupted frame
+    lines_c2 = []
+    for i in range(1000, n_structures):
+        lines_c2.append(
+            f'2\nProperties=species:S:1:pos:R:3 argonne_rel="struct_{i}/" data_id={i}\n'
+            f'C 0 0 0\nC 0 0 1.2\n'
+        )
+    # Duplicate struct_500/
+    lines_c2.append(
+        '2\nProperties=species:S:1:pos:R:3 argonne_rel="struct_500/" data_id=500\n'
+        'H 0 0 0\nH 0 0 1\n'
+    )
+    # Corrupted frame: 210 expected, 0 lines followed by EOF
+    lines_c2.append(
+        '210\nProperties=species:S:1:pos:R:3 argonne_rel="struct_corrupt/" data_id=9999\n'
+    )
+    (output_dir / "structs_large_1000_2000.xyz").write_text("".join(lines_c2), encoding="utf-8")
+
+    # Execute merge_chunks
+    final_pq, final_xyz, final_rst = merge_chunks(data_source, output_dir, delete_chunks=True)
+
+    assert final_pq is None
+    assert final_xyz == output_dir / "stage1_structs_large.xyz"
+    assert final_rst == tmp_path / "large_prefix_restart.json"
+
+    # Verify intermediate files are deleted
+    assert not (output_dir / "structs_large_0_1000.xyz").exists()
+    assert not (output_dir / "structs_large_1000_2000.xyz").exists()
+
+    # Verify restart file
+    with open(final_rst, "r", encoding="utf-8") as f:
+        rst_data = json.load(f)
+    assert rst_data["struct_0/"]["processed"] is True
+    assert rst_data["struct_1999/"]["processed"] is True
+    assert rst_data["struct_corrupt/"]["processed"] is False
+
+    # Verify merged file frame count
+    res = ase.io.read(str(final_xyz), index=":")
+    assert len(res) == n_structures
+
+
 
 
 
